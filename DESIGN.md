@@ -65,6 +65,10 @@ damage forever while the code looked correct. It would "work" by accident today 
 two. Unstable keys mean every update looks like total novelty and the consumer pays full price to
 relearn a world that did not change. Device manager key: **the pubkey**.
 
+Keys are scoped to the parent, so **re-parenting reads as `gone` + `appeared`, not `moved`** — a
+deliberate choice, recorded here so nobody later "fixes" it. `:moved` is for a subtree that
+translated within its parent, which is the case the transport can make cheap.
+
 ## Rule 2 — `moved` is a delta kind
 
 Fixed extents bound the cost of a *mutation*. They do nothing for **scroll**, which translates every
@@ -89,6 +93,10 @@ The chain ends in 16px macroblocks. Sub-grid precision is precision the encoder 
 row dirties two macroblock rows for one row of content. **Row heights and pane edges snap to 16 at
 layout time.** One line of layout policy; free now, a migration later.
 
+The grid is **framebuffer-space, not logical points.** The browser already scales the video to the
+viewport and applies a pinch-zoom transform, so if a scale factor ever appears between layout and
+encoder the snap must stay with the macroblocks rather than drifting with the logical units.
+
 ## Rule 4 — budget, deferred remainder, idle drain, and ordering
 
 Every consumer gets an update budget, and a delta that does not fit is **deferred, not dropped**.
@@ -102,6 +110,43 @@ Two disciplines that sound obvious and were both learned the hard way:
   before *improving quality of what it has*. We had to make the pending-drain outrank the idle
   refinement pass explicitly; correctness of the working set outranks fidelity of it.
 
+### The stream carries state, not events
+
+**Deltas supersede by key.** If a presentation changes three times while over budget, the consumer
+receives the latest state *once* — never a replay of intermediates. The stream's contract is
+*converge to current state under budget*, nothing more.
+
+The pixel encoding is already built this way, structurally: a dirty macroblock is a **bit in a
+vector, not an entry in a queue**, and `capture-take` hands over the *current* planes rather than a
+history. Three changes between frames cost one bit. The semantic encoding must be deliberately the
+same shape.
+
+A consumer that wants event history — audit, undo, "what happened while I was away" — is asking for
+a **different product**, and should read the command log rather than the presentation stream. Saying
+so now is what stops this protocol from being quietly bent into an event bus later, which is the
+standard way delta protocols die. `as-of` makes coalesced, deferred delivery honest for free: the
+consumer can see it is holding old news.
+
+### Resync is a delta kind
+
+Every real delta protocol needs an answer to *connected late / fell too far behind / lost state*: a
+**snapshot** of the full subscribed projection, itself under budget and chunked by the same deferral
+discipline, carrying a **generation** marker.
+
+The pixel encoding already contains both halves, which is why this is a naming exercise rather than
+a design one:
+
+- a periodic keyframe (`key-interval`) so a late or recovering viewer resynchronises;
+- on capture reconnect, `fill dirty-mbs 1` — re-announce the entire working set while retaining the
+  planes;
+- and our progressive whole-screen refresh (19 frames × 17.7 KB) *is* a chunked snapshot under
+  budget, already validated.
+
+One rule the pixel path gets for free and the semantic path must state, because it is where
+key-mismatch bugs breed: **snapshot chunks carry the generation, and deltas older than the current
+generation are discarded.** Otherwise a live change arriving mid-snapshot can be applied on top of a
+chunk that already reflects it, or under one that supersedes it.
+
 ## Rule 5 — gestures are recognized at the edge; the wire carries semantics
 
 Press-hold is a *timing* discrimination (down, ~400 ms, no movement). Timing it server-side across
@@ -114,9 +159,22 @@ the server maps gesture → presentation → command.
 
 | gesture | meaning |
 |---|---|
-| `tap` | invoke the declared default command |
-| `hold` | open the applicable-command menu |
-| `two-finger` | reserved (pan / scroll) |
+| `tap` | invoke the declared default command for the presentation under the finger |
+| `hold` | open the applicable-command menu — **hold-drag-release is one continuous gesture**: hold opens, dragging moves the selection, release invokes |
+| `hold` on empty space | the **view's** own commands (refresh, revoke-all), or nothing if it declares none |
+| `two-finger` | **pan / scroll — v1, not reserved** |
+
+The enum is closed. `hold-drag` is the menu interaction, not drag-and-drop; if dragging *objects*
+is ever wanted it needs a new verb rather than an overload.
+
+**Two-finger scroll is client one, not future work.** Rule 2 exists *because* of scroll, and a list
+is the case that exercises `:moved`, budget-under-continuous-input, and idle drain simultaneously —
+which is exactly where the strand-the-remainder bug lived. It is the first honest test of the
+protocol.
+
+> These are the gestures of a *warp surface*. The glass desktop's RFB passthrough keeps its own
+> pointer semantics (where press-hold arms a drag); the two vocabularies coexist because they are
+> different consumers of the same client.
 
 There is no hover, so "pointer over presentation of type T" has nothing to hang on — a second,
 independent reason the refusal of translators is not merely discipline.
@@ -169,6 +227,18 @@ re-plumbing later:
 
 The device manager subscribes to a query (*enrollments where exp > now*), even though its
 implementation is a file scan. The engine can slide underneath without touching clients.
+
+**Time is an input to queries.** `exp > now` changes when *nothing changes*: an enrollment crosses
+its expiry with zero writes and zero mutations, and the result-set is silently wrong until something
+unrelated re-runs the scan. So the cheap policy, chosen now because it is also the
+forward-compatible one:
+
+> `now` **quantizes to a tick** (60 s is ample for expiries), the tick is a **subscribable source**,
+> and crossing it emits ordinary `gone` / `changed` deltas.
+
+The gateway currently hides this by evaluating `(> exp (%unix-now))` at call time — correct, but it
+means the *view* has no way to learn that a row lapsed. When differential dataflow slides underneath,
+"time is just another input relation" is exactly how it wants this modelled.
 
 ## Consumer-negotiated slices
 
