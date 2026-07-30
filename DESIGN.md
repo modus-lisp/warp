@@ -1,77 +1,87 @@
-# warp — a presentation-based UI kit for glass
+# warp — typed projections over a keyed delta protocol
 
 *warp: the threads held under tension on the loom — the retained structure the weft passes
-through. weft is the web engine; warp is the retained UI tree.*
+through.* [weft](../weft) is the web engine; warp is the retained UI tree.
 
-## What this is
+A UI system for [glass](../glass) apps in pure Common Lisp, on [gesso](../gesso) (2D vector) and
+[scribe](../scribe) (text). Not in loom (loom is an app), not McCLIM (retained but imperative, and
+its size is the problem).
 
-A small UI system for glass apps, on **gesso** (2D vector) and **scribe** (text). Not in loom
-(loom is an app), not McCLIM (retained but imperative, and its size is the problem).
+## The core is a protocol, not a renderer
 
-Two ideas, one refusal:
+The temptation is to describe warp as a widget kit with a clever repaint strategy. That gets the
+layering backwards. What warp actually is:
 
-- **Presentations** (from CLIM): output is not pixels, it is *typed objects that were displayed*.
-  A presentation is `(key, type, object, extent, render)`. The retained tree of these is the UI.
-- **Commands** (from CLIM): declared against argument *types*, not wired to widgets.
+> **A keyed, budgeted, staleness-annotated delta protocol over typed projections — with encodings
+> per consumer.**
+
+Deltas are `changed` / `moved` / `appeared` / `gone`, against a *subscribed projection*, under a
+per-consumer byte budget. Macroblocks are the encoding for retinas; tokens would be the encoding
+for a model. Neither is privileged. `present` is not a rendering step — it is a **compression
+decision**: which slice of the object graph travels toward a consumer with finite intake.
+
+This is why the rules below look like transport rules. They are. A context window is a viewport;
+attention is priced per token the way our frames are priced per macroblock. A consumer that cannot
+afford the whole graph per tick needs a working set, deltas against what it already holds, and a way
+to know what is stale — whether it has eyes or not.
+
+### Two ideas, one refusal
+
+- **Presentations** (CLIM): output is *typed objects that were displayed* —
+  `(key, type, object, extent, as-of, render)`.
+- **Commands** (CLIM): declared against argument *types*, with an authorization predicate.
 - **Refused**: presentation translators, nested input contexts, `accept`-driven parsing. That
   machinery is where CLIM's size lives, and our gesture vocabulary cannot express it anyway.
 
-Reconciliation (rebuild declaratively, diff against the retained tree) is *not* a modern import —
-it is CLIM's `updating-output` with `:unique-id`/`:cache-value`. It is also the part of CLIM with
-the worst bug reputation, and the reason is identity. Hence rule 1.
+Reconciliation is not a modern import — it is CLIM's `updating-output` with
+`:unique-id`/`:cache-value`. It is also the part of CLIM with the worst bug reputation, and the
+reason is identity. Hence rule 1.
 
-## Why a retained tree, and not immediate mode
+### Evidence, not theory
 
-1. **The inspector needs a thing to inspect.** Immediate mode has no object between frames.
-2. **The transport is priced per pixel.** glass ships a framebuffer to a phone as VP8 over
-   cellular. The pipeline is tuned end to end for *only what changed*:
-   `presentation extent → RFB damage rect → dirty macroblock → skip bit`.
-   A UI that re-emits the world each frame is the pathological input for it. (loom's chrome is
-   immediate-mode and paints straight into the live framebuffer; that is why it flickers.)
+The transport half of this protocol already exists and was tuned end to end under cellular
+pressure. Measured on a real 1280×800 desktop:
 
-warp does not need to invent damage transport. It needs to emit correct rects into a chain that
-already exists and is already tuned.
+| | before | after |
+|---|---|---|
+| static frame | 76 KB / 300 ms | **629 B / 1 ms** |
+| a whole-screen change | one 143 KB frame (~570 ms in flight) | **17.7 KB max frame**, 19 progressive frames |
+| delivered rate | ~0.5 fps | **24 fps** |
 
-## Rule 1 — identity
+Cellular was not a special case; it was the latency manifold showing itself first.
 
-A presentation is `(key, type, object, extent, render)`. Reconcile matches on `(parent, key)`.
+## Rule 1 — identity is a declared key function
 
-- **The default key is a per-type key function, declared once alongside the type.** Raw `eq` is
-  the fallback *only* for objects with genuine identity.
-- **`eq` as the default would be a trap.** Our first client proves it: enrollments come from a
-  file that `sync-devices` re-reads by `clrhash` + reload. There are no persistent objects at all —
-  every sync yields fresh state. `eq` would fail universally, everything would look new, and we
-  would emit full-frame damage forever while the code looked correct. It would "work" by accident
-  today and break on client two.
-- Device manager key: **the pubkey**.
+Reconcile matches on `(parent, key)`. **The default key is a per-type key function declared
+alongside the type.** Raw `eq` is the fallback *only* for objects with genuine identity.
 
-Damage from reconciliation:
+Keyed identity is what makes deltas possible at all: `enrollment ab3f changed` instead of reshipping
+the list is the same trick for a model's context as for the encoder's skip bits.
 
-| outcome | damage |
-|---|---|
-| matched, render inputs unchanged | none |
-| matched, changed | its extent |
-| new | its extent |
-| dropped | its extent |
-| subtree translated | `:translated (dx dy)` — see rule 2 |
+**`eq` as the default would be a trap, and client one proves it.** Enrollments come from a file that
+`sync-devices` re-reads by `clrhash` + reload — there are no persistent objects, only hash-table
+entries. `eq` would fail on every render, everything would look new, and we would emit full-frame
+damage forever while the code looked correct. It would "work" by accident today and break on client
+two. Unstable keys mean every update looks like total novelty and the consumer pays full price to
+relearn a world that did not change. Device manager key: **the pubkey**.
 
-## Rule 2 — damage kinds, and translation
+## Rule 2 — `moved` is a delta kind
 
-Fixed extents bound damage per *mutation*. They do nothing for **scroll**, which translates every
-row and would naively dirty the whole viewport — blowing the per-frame byte budget that exists
-because one 143 KB frame is ~570 ms on cellular and reads as a freeze.
+Fixed extents bound the cost of a *mutation*. They do nothing for **scroll**, which translates every
+row and would naively dirty the whole viewport.
 
-So a subtree may report **`:translated (dx dy)`** as its damage, distinct from `:changed`. This
-maps onto transport that already exists: RFB **CopyRect** (glass emits it on window moves; the
-capture applies it as a plane move) and, eventually, **VP8 motion vectors**.
+So a subtree may report **`:moved (dx dy)`**, distinct from `:changed`. For pixels this is RFB
+**CopyRect** and, later, VP8 motion vectors. For an agent it is the exact twin: *"these fifty rows
+moved, contents unchanged"* as one assertion instead of fifty re-sends. Scroll and re-sort are cheap
+**semantically**, not merely as motion vectors.
 
-> **Honest status:** the payoff is not there yet. Our capture marks the CopyRect *destination*
-> dirty, and the encoder re-codes it with ZEROMV, so a translation currently costs what a change
-> costs. `:translated` is designed in now because it is a *wire/damage* concept — retrofitting it
-> after clients exist would be a migration. It becomes cheap when VP8 MVs land.
+> **Status:** the pixel payoff is not there yet. Our capture marks the CopyRect *destination* dirty
+> and the encoder re-codes it with ZEROMV, so a translation currently costs what a change costs.
+> `:moved` is designed in now because it is a *wire* concept and retrofitting it after clients exist
+> would be a migration. It goes cheap when VP8 motion vectors land.
 
-Without this, the transport argument holds for edits and collapses for navigation — and navigation
-is most of what a finger does to a list.
+Without this the transport argument holds for edits and collapses for navigation — and navigation is
+most of what a finger does to a list.
 
 ## Rule 3 — extents snap to the macroblock grid
 
@@ -79,19 +89,28 @@ The chain ends in 16px macroblocks. Sub-grid precision is precision the encoder 
 row dirties two macroblock rows for one row of content. **Row heights and pane edges snap to 16 at
 layout time.** One line of layout policy; free now, a migration later.
 
-## Rule 4 — gestures are recognized on the client, and the wire carries semantic gestures
+## Rule 4 — budget, deferred remainder, idle drain, and ordering
 
-Press-hold is a *timing* discrimination (down, ~400 ms, no movement). Doing it server-side from raw
-touch events over 100–300 ms of jittery cellular means holds misread as taps whenever the network
-hiccups.
+Every consumer gets an update budget, and a delta that does not fit is **deferred, not dropped**.
+Two disciplines that sound obvious and were both learned the hard way:
 
-Recognition therefore lives in the phone client — where it **already does**: the touch layer
-discriminates tap / press-hold-drag / two-finger locally and animates the cursor ring. What is
-missing is that it *flattens* the result into synthetic RFB mouse events. The wire should carry
-**semantic gestures**: `(gesture, x, y)`, with the server mapping gesture → presentation → command.
+- **Idle drain.** Deferred deltas must flush when nothing new arrives. Our first implementation
+  only carried them forward on frames that had *new* content, so when a drag stopped, the
+  undelivered remainder was stranded forever — the viewer saw two scan lines of a change and never
+  the rest. A budgeted protocol without an idle drain silently loses data.
+- **Unseen before prettier.** When both are owed, deliver *content the consumer has never seen*
+  before *improving quality of what it has*. We had to make the pending-drain outrank the idle
+  refinement pass explicitly; correctness of the working set outranks fidelity of it.
 
-The vocabulary is frozen into the client protocol. That is acceptable because it is deliberately
-tiny — and it is a protocol decision, so it belongs here:
+## Rule 5 — gestures are recognized at the edge; the wire carries semantics
+
+Press-hold is a *timing* discrimination (down, ~400 ms, no movement). Timing it server-side across
+100–300 ms of jittery cellular means holds misread as taps whenever the network hiccups.
+
+Recognition therefore lives in the client — where it **already does**: the phone's touch layer times
+tap / press-hold-drag / two-finger locally and animates the cursor ring. What is missing is that it
+*flattens* the result into synthetic RFB mouse events. The wire should carry `(gesture, x, y)`, and
+the server maps gesture → presentation → command.
 
 | gesture | meaning |
 |---|---|
@@ -99,78 +118,138 @@ tiny — and it is a protocol decision, so it belongs here:
 | `hold` | open the applicable-command menu |
 | `two-finger` | reserved (pan / scroll) |
 
-There is no hover. "Pointer over presentation of type T" has nothing to hang on, which is a second,
+There is no hover, so "pointer over presentation of type T" has nothing to hang on — a second,
 independent reason the refusal of translators is not merely discipline.
 
-## Rule 5 — applicability, and safe defaults
+## Rule 6 — applicability, and safe defaults
 
-A command declares argument types, a name, and an **authorization predicate**. A presentation has a
-type. One flat rule:
-
-- **`tap` invokes the declared default command for `(type, view)`.**
-- **`hold` lists applicable commands.**
-
-Hardening:
-
+- **`tap` invokes the declared default command for `(type, view)`. `hold` lists applicable ones.**
 - **Defaults are declared, never derived.** Deriving from "most specific applicable" is the seed of
   translator-creep: once ordering gets clever, we have rebuilt what we refused.
-- **A default must be non-destructive** — drill-in, inspect, expand. Idempotent or read-only.
-- **Destructive commands are hold-menu only**, with confirmation when irreversible. One mis-tap on
-  a phone must not revoke a device.
+- **A default must be non-destructive** — drill-in, inspect, expand.
+- **Destructive commands are hold-menu only**, with confirmation when irreversible. One mis-tap on a
+  phone must not revoke a device.
 - **Authorization is enforced at invocation, in the gateway.** Menu filtering is courtesy, not
-  security. The GUI must not become a second enforcement point that someone later trusts.
+  security. The GUI must not become a second enforcement point someone later trusts.
 
-## Rule 6 — view state is presentations too
+## Rule 7 — view state is presentations too
 
-Scroll offset, selection, expanded/collapsed. It lives server-side (the client is a dumb glass),
-it is per-*view* not per-object, and the reconciler must preserve it across rebuilds. This is a
-fourth line in rule 1, not a new system: **viewport and selection are presentations, keyed to their
-parent, surviving reconciliation.**
+Scroll offset, selection, expanded/collapsed. Server-side (the client is a dumb glass), per-*view*
+not per-object, and preserved across rebuilds — **keyed the same way presentations are.** A fourth
+line in rule 1, not a new system.
 
-## The one bite of the seductive idea
+## Staleness and cost are first-class
 
-"Every view is an inspector" is the Naked Objects thesis with the Self aesthetic. Its pure form
-dies on three things: generic views are legible but not *designed* (the value of an interface is
-mostly editorial — emphasis, sequence, omission); writing through non-invertible projections is
-unsolved; and views are really onto *queries*, which turns the UI kit into a database needing
-incremental view maintenance.
+The classic sin of layered systems is a synchronous-looking interface over an asynchronous world,
+forcing every consumer to infer latency by suffering it. Cheap fix:
+
+- Every presentation carries its **`as-of`**.
+- Every command and drill-in carries a **cost class**.
+
+A human surface renders that as a stale-tint or a disclosure affordance; an agent reads it as
+scheduling data — refresh before acting, batch these, do not block on that. Same field, two
+renderings, and the latency manifold becomes part of the semantic tree instead of an ambient
+betrayal.
+
+The existing command set already has three genuine classes: `devices` is a file read (instant),
+`revoke` a file write plus gateway sync (fast), `link` a Nostr round trip (seconds).
+
+## Views are query-shaped — an explicit IOU
+
+Query-shaped views (`expiring-this-week`, `agents-currently-failing`) are where *which slice
+travels* is decided. Maintaining them by re-running the query and diffing is a simulation of
+incrementality that degrades linearly with data size. The honest floor under this protocol is
+**incremental view maintenance** (differential dataflow).
+
+Not release one. But it is no longer "a second project the bandwidth economics might fund" — it is
+load-bearing under a protocol we are committing to for *every* consumer. So, cheap now to avoid
+re-plumbing later:
+
+> **Views subscribe to result-sets, not to objects they happen to enumerate.**
+
+The device manager subscribes to a query (*enrollments where exp > now*), even though its
+implementation is a file scan. The engine can slide underneath without touching clients.
+
+## Consumer-negotiated slices
+
+One asymmetry worth stating, because it is the only place the consumers genuinely differ: **an agent
+can renegotiate its own viewport; a human cannot.** A model can ask for fewer fields, different
+rows, deltas-only. A human's viewport is fixed by physics and their attention is not re-targetable
+on request.
+
+So: the protocol is shared, but *slice negotiation* is a consumer capability. Human surfaces are
+curated — someone chose the slice in advance. Agent surfaces are negotiated. Same tree, same deltas,
+same budget discipline.
+
+## The one bite of "every view is an inspector"
+
+The pure form (Naked Objects, Self, lenses) dies on three things: generic views are legible but not
+*designed* (the value of an interface is mostly editorial — emphasis, sequence, omission); writing
+through non-invertible projections is unsolved; and views are onto *queries*, which turns the UI kit
+into a database.
 
 CLIM already contains the safe embodiment, and it is the part everyone forgets: **`present`
-dispatches on `view`** — `present (object type view)`.
+dispatches on `view`**.
 
-- The **default method** is a MOP-derived slot walk. Any new type in the image is immediately
+- The **default method** is a MOP-derived slot walk: any new type in the image is immediately
   browsable, with zero UI code.
 - **Designing a UI** means specializing `present` for `(enrollment, table-view)`.
 
-So "every view is an inspector" is true as the *degenerate case*, and apps are editorial overrides
-layered method by method — Naked Objects' free-admin-panel property without betting the
-architecture on lenses. Steal GToolkit's pane composition (Miller columns) when panes arrive.
-
-Reads are projections; **writes are commands**. The asymmetry is real, and it is the design we are
+Reads are projections; **writes are commands**. That asymmetry is real, and it is the design we are
 already running: `revoke` exists once, authorization-checked, in the gateway.
 
-## Why the device manager is client one
+## View lifecycle: playground → committed
 
-It exercises every rule in ~200 lines, and it pays for the abstraction immediately:
+Views have a **status** (`playground` or `committed`) and a version; default glass surfaces render
+only committed ones. A metadata field and a filter, not a new system — but it carries the trust
+boundary.
 
-The gateway already has a command set on a type — `link`, `devices`, `revoke <prefix|all>` — with
-real applicability rules (allowlist vs. enrolled device). With commands as first-class objects, the
-**DM interface, a CLI, and the glass GUI become three presentations of one command set**, with
+Humans get **habituation** from an interface: spatial and muscle memory, revoke being third in the
+menu today because it was third yesterday. A view that reshapes per-utterance is maximally
+responsive and minimally learnable. Worse, rule 6 *depends* on stability — "destructive commands
+behind hold" only protects if layouts do not shift under the finger. Adaptive UI is where mis-taps
+come from.
+
+And ephemeral views are unauditable in principle: a generated view that happens to omit the field
+that would have alarmed you is, in the moment, indistinguishable from a good one. Committed views
+are code — diffable, reviewable, blameable. **Promotion is code review for perception.**
+
+So the human UI is not a different system from a generated one; it is the same artifact at a
+different temperature. Ephemeral where exploration happens, frozen where trust is required.
+
+## Generated views: freedom over projection, none over invocation
+
+Rule 6 was written as guardrails against mis-taps, but it reads verbatim as **lint constraints on
+model-authored `present` methods**: a generated view cannot make a destructive command a default,
+cannot bypass confirmation, cannot widen authorization — because commands are objects with declared
+safety properties and the view layer cannot override them, and enforcement is at the gateway
+regardless of surface.
+
+**Generate the seeing, never the permitting.**
+
+## Client one: the device manager
+
+It exercises every rule in ~200 lines, and it pays for the abstraction immediately. The gateway
+already has a command set on a type — `link`, `devices`, `revoke <prefix|all>` — with real
+applicability rules (allowlist vs. enrolled device). With commands as first-class objects, the **DM
+interface, a CLI, the glass GUI, and an agent become surfaces of one command set**, with
 authorization written once. Today a GUI would duplicate both `revoke`'s logic and its authorization
-check. That is the concrete argument for presentations+commands over a widget kit.
+check.
 
-- keyed identity — pubkey, naturally stable, and `eq` provably fails
-- fixed, grid-snapped extents — a row per enrollment
-- tap → inspect (safe default), hold → revoke (destructive, confirmed)
+- keyed identity — pubkey; `eq` provably fails
+- query-shaped subscription — *enrollments where exp > now*
+- fixed, grid-snapped extents — one row per enrollment
+- `tap` → inspect (safe default); `hold` → revoke (destructive, confirmed)
 - authorization at invocation, in the gateway
 - view state — selection survives the file changing underneath
+- ships as warp's first **committed** view, because a human must trust it with revoke
 
-## Extract under load, do not design up front
+## Extract under load
 
-Layout, theming, pane composition, animation: **extract when a second client needs them.** Three
-clients decide whether the core is right — device manager, loom's chrome (retiring the flickering
-immediate-mode code), and the inspector (proving presentations are real). Fewer than three and we
-are guessing.
+Layout, theming, pane composition (steal GToolkit's Miller columns), animation: **extract when a
+second client needs them.** Three clients decide whether the core is right — device manager, loom's
+chrome (retiring the flickering immediate-mode code), and the inspector (proving presentations are
+real). Fewer than three and we are guessing.
 
-The failure mode is building a framework in the abstract. The presentation concept itself is tiny;
-the gravity well around it is not.
+The failure mode is building a framework in the abstract. The presentation concept is tiny; the
+gravity well around it is not.
