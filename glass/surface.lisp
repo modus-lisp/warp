@@ -48,6 +48,71 @@
   (glass:fb-rect fb (warp::extent-x e) (warp::extent-y e)
                  (warp::extent-w e) (warp::extent-h e) +bg+))
 
+
+;;; ---- menus are presentations too --------------------------------------------
+;;; Rule 7 says view state is presentations, keyed like everything else.  A menu is exactly that: a
+;;; transient overlay whose rows are commands.  Which means it needs no special painting path, no
+;;; separate damage accounting, and no extra code in the reconciler — opening a menu emits :appeared
+;;; for its items, closing emits :gone, and the damage is bounded to the menu itself.
+
+(defstruct (menu-item (:conc-name mi-))
+  kind        ; :command | :confirm | :cancel
+  command     ; the COMMAND object (nil for :cancel)
+  target)     ; the domain object it would act on
+
+(warp:define-presentation-key menu-item (m)
+  (format nil "menu:~(~a~):~a" (mi-kind m)
+          (if (mi-command m) (warp:cmd-name (mi-command m)) "cancel")))
+
+(defmethod warp:present ((m menu-item) (type (eql 'menu-item)) view)
+  (declare (ignorable view))
+  (let ((c (mi-command m)))
+    (ecase (mi-kind m)
+      (:command (list (warp:cmd-label c) (warp:cmd-cost c)
+                      (if (warp:cmd-destructive c) :destructive :safe)))
+      (:confirm (list (format nil "really ~a?" (warp:cmd-label c)) :confirm :destructive))
+      (:cancel  (list "cancel" nil :safe)))))
+
+(defparameter +menu-w+ 224)
+(defparameter +menu-row+ 32)
+
+(defun menu-presentations (sf)
+  "Lay the open menu out beneath its target row, as ordinary presentations."
+  (let ((m (sf-menu sf)))
+    (when m
+      (destructuring-bind (&key target items) m
+        (let* ((te (warp:p-extent target))
+               (x (min (warp::extent-x te)
+                       (max 0 (- (glass:fb-width (sf-fb sf)) +menu-w+))))
+               (y0 (+ (warp::extent-y te) (warp::extent-h te))))
+          (loop for it in items
+                for i from 0
+                for y = (+ y0 (* i +menu-row+))
+                collect (warp:make-presentation
+                         :key (warp:presentation-key 'menu-item it)
+                         :type 'menu-item :object it
+                         :extent (warp:snap-extent x y +menu-w+ +menu-row+)
+                         :fingerprint (warp:present it 'menu-item (sf-view sf))
+                         :as-of (warp:now-tick))))))))
+
+(defun open-menu (sf target commands)
+  (setf (sf-menu sf)
+        (list :target target
+              :items (append (mapcar (lambda (c) (make-menu-item :kind :command :command c
+                                                                 :target (warp:p-object target)))
+                                     commands)
+                             (list (make-menu-item :kind :cancel))))))
+
+(defun confirm-menu (sf target command)
+  "Replace the menu with a confirmation.  Rule 6: irreversible commands do not run on one tap."
+  (setf (sf-menu sf)
+        (list :target target
+              :items (list (make-menu-item :kind :confirm :command command
+                                           :target (warp:p-object target))
+                           (make-menu-item :kind :cancel)))))
+
+(defun close-menu (sf) (setf (sf-menu sf) nil))
+
 ;;; ---- the surface -----------------------------------------------------------
 
 (defstruct (surface (:conc-name sf-))
@@ -55,10 +120,12 @@
   rows-fn                       ; () -> the current result-set (presentations)
   (stream (warp:make-delta-stream))
   (visible '())                 ; last emitted set, for hit-testing
+  (menu nil)                    ; (:target presentation :items (menu-item ...)) or NIL
   (selected nil)
   (budget 400)
   (invoker :allowlist)
   (lock (bt:make-lock))
+  (last-result nil)
   (painted 0) (emitted 0) (passes 0)
   (stop nil))
 
@@ -96,7 +163,7 @@
 (defun tick (sf)
   "One pass: recompute the result-set, emit what is owed under budget, paint only that."
   (bt:with-lock-held ((sf-lock sf))
-    (let ((rows (funcall (sf-rows-fn sf))))
+    (let ((rows (append (funcall (sf-rows-fn sf)) (menu-presentations sf))))
       (multiple-value-bind (deltas deferred) (warp:emit (sf-stream sf) rows :budget (sf-budget sf))
         (declare (ignore deferred))
         (incf (sf-passes sf))
@@ -107,27 +174,50 @@
 
 (defun on-pointer (sf mask x y)
   "Interim gesture mapping (see the file header): button 1 = tap, button 3 = hold."
-  (let ((p (hit sf x y)))
-    (when p
-      (let ((gesture (cond ((logtest mask 1) :tap) ((logtest mask 4) :hold) (t nil))))
-        (when gesture
-          (multiple-value-bind (kind payload)
-              (warp:gesture-command gesture (warp:p-type p) (sf-view sf) :invoker (sf-invoker sf))
-            (case kind
-              (:invoke
-               ;; the declared default — guaranteed non-destructive by warp
-               (setf (sf-selected sf) (warp:p-key p))
-               (handler-case (warp:invoke (warp:cmd-name payload) (warp:p-object p) (sf-invoker sf))
-                 (warp:command-refused (c)
-                   (format *error-output* "~&[warp] ~a~%" c))))
-              (:menu
-               ;; a real menu is the next piece of surface work; for now report what WOULD be offered,
-               ;; which is already the useful half — it proves applicability and filtering are live
-               (format *error-output* "~&[warp] hold on ~a -> ~{~a~^, ~}~%"
-                       (warp:p-key p)
-                       (mapcar #'warp:cmd-label payload))
-               (finish-output *error-output*))
-              (t nil))))))))
+  (let* ((gesture (cond ((logtest mask 1) :tap) ((logtest mask 4) :hold) (t nil)))
+         (p (and gesture (hit sf x y))))
+    (when gesture
+      (cond
+        ;; nothing under the finger: a tap dismisses any open menu
+        ((null p) (when (eq gesture :tap) (close-menu sf)))
+        ;; a tap on a menu row
+        ((eq (warp:p-type p) 'menu-item)
+         (when (eq gesture :tap)
+           (let ((it (warp:p-object p)))
+             (ecase (mi-kind it)
+               (:cancel (close-menu sf))
+               (:command
+                (let ((c (mi-command it)))
+                  ;; destructive commands get a confirmation step rather than running
+                  (if (warp:cmd-confirm c)
+                      (confirm-menu sf (getf (sf-menu sf) :target) c)
+                      (progn (run-command sf c (mi-target it)) (close-menu sf)))))
+               (:confirm
+                (run-command sf (mi-command it) (mi-target it) :confirmed t)
+                (close-menu sf))))))
+        ;; a tap or hold on content
+        (t
+         (multiple-value-bind (kind payload)
+             (warp:gesture-command gesture (warp:p-type p) (sf-view sf) :invoker (sf-invoker sf))
+           (case kind
+             (:invoke
+              (close-menu sf)
+              (setf (sf-selected sf) (warp:p-key p))
+              (run-command sf payload (warp:p-object p)))
+             (:menu (open-menu sf p payload))
+             (t nil))))))))
+
+(defun run-command (sf command object &key confirmed)
+  "Invoke, and let warp refuse.  The surface never second-guesses the policy — it only reports."
+  (handler-case
+      (let ((r (warp:invoke (warp:cmd-name command) object (sf-invoker sf) :confirmed confirmed)))
+        (setf (sf-last-result sf) r)
+        r)
+    (warp:command-refused (c)
+      (setf (sf-last-result sf) (list :refused (warp:refused-reason c)))
+      (format *error-output* "~&[warp] ~a~%" c)
+      (finish-output *error-output*)
+      nil)))
 
 (defun run (&key (port 5910) (width 480) (height 448) (name "warp") view rows-fn
                  (hz 4) (budget 400) (invoker :allowlist))
