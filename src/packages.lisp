@@ -18,5 +18,7 @@
    #:define-default-command #:default-command
    #:applicable-commands #:invoke #:command-refused #:refused-command #:refused-reason
    #:gesture-command
+   ;; projections + layout
+   #:present #:layout-list #:list-content-height
    ;; time as an input
    #:+tick-seconds+ #:now-tick))

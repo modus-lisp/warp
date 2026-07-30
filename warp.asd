@@ -12,4 +12,5 @@ reconciler that converges a consumer to current state under a budget.  The rende
     ((:file "packages")
      (:file "presentation")     ; the record, per-type key functions, grid-snapped extents
      (:file "reconcile")        ; state->state diff, coalescing, budget + deferral, snapshots
-     (:file "command")))))      ; commands on types: applicability, declared safe defaults, invocation
+     (:file "command")          ; commands on types: applicability, declared safe defaults, invocation
+     (:file "present")))))      ; present (object type view) + list layout
