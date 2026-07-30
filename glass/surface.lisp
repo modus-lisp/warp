@@ -219,6 +219,23 @@
       (finish-output *error-output*)
       nil)))
 
+(defun make-surface-app (fb &key view rows-fn (budget 400) (invoker :allowlist))
+  "The WM surface contract: given a framebuffer, return (values ON-KEY ON-POINTER DIRTY-P).
+DIRTY-P is a warp pass — recompute the result-set, emit what is owed, paint only that, and report
+whether anything changed.  This is how warp becomes a window in the glass desktop rather than a
+separate server: the WM owns the framebuffer, decorates and composites it, and knows nothing about
+presentations."
+  (let ((sf (make-surface :fb fb :view view :rows-fn rows-fn :budget budget :invoker invoker)))
+    (glass:with-fb-locked (fb) (glass:fb-fill fb +bg+))
+    (values
+     ;; on-key: Escape dismisses an open menu, which is the only key this surface needs yet
+     (lambda (down keysym)
+       (when (and down (= keysym #xff1b) (sf-menu sf)) (close-menu sf) t))
+     (lambda (mask x y) (on-pointer sf mask x y))
+     ;; dirty-p: the WM polls this; a pass returns non-nil exactly when it painted
+     (lambda () (and (tick sf) t))
+     sf)))
+
 (defun run (&key (port 5910) (width 480) (height 448) (name "warp") view rows-fn
                  (hz 4) (budget 400) (invoker :allowlist))
   "Serve a warp surface over RFB on PORT.  Returns the SURFACE; the paint loop and the RFB server
