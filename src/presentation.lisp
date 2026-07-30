@@ -1,0 +1,86 @@
+;;;; presentation.lisp — the record, per-type key functions, grid-snapped extents.
+;;;;
+;;;; A presentation is a typed object that was displayed.  FINGERPRINT is the CLIM :cache-value
+;;;; idea: the value the view derived its appearance from, compared with EQUAL to decide whether a
+;;;; matched presentation actually changed.  Keeping it separate from RENDER means change detection
+;;;; never has to inspect a closure.
+
+(in-package #:warp)
+
+;;; ---- extents ---------------------------------------------------------------
+;;; Extents live in FRAMEBUFFER space and snap to the macroblock grid: the delta chain ends in 16px
+;;; macroblocks, so sub-grid precision is precision the encoder cannot use (see DESIGN.md rule 3).
+
+(defconstant +grid+ 16)
+
+(declaim (inline extent-x extent-y extent-w extent-h))
+(defun extent-x (e) (first e))
+(defun extent-y (e) (second e))
+(defun extent-w (e) (third e))
+(defun extent-h (e) (fourth e))
+
+(defun snap (n &key (up nil))
+  "Round N to the macroblock grid — down for origins, up for sizes."
+  (if up (* +grid+ (ceiling n +grid+)) (* +grid+ (floor n +grid+))))
+
+(defun snap-extent (x y w h)
+  "An extent snapped OUTWARD to the grid, so it always covers what it claims to."
+  (let* ((x0 (snap x)) (y0 (snap y))
+         (x1 (snap (+ x w) :up t)) (y1 (snap (+ y h) :up t)))
+    (list x0 y0 (- x1 x0) (- y1 y0))))
+
+;;; ---- the record ------------------------------------------------------------
+
+(defstruct (presentation (:conc-name p-))
+  key                     ; identity within the parent (see PRESENTATION-KEY)
+  type                    ; a symbol; commands are declared against these
+  object                  ; the domain object this displays
+  extent                  ; (x y w h), framebuffer space, grid-snapped
+  (as-of nil)             ; when the underlying data was read; makes stale delivery honest
+  (fingerprint nil)       ; EQUAL-compared summary of what the appearance depends on
+  (cost nil)              ; optional override; defaults to the extent's macroblock count
+  (children '()))
+
+(defun p-macroblocks (p)
+  "How many 16px macroblocks this presentation's extent covers — the natural cost unit, since the
+consumer's budget is ultimately spent in them."
+  (let ((e (p-extent p)))
+    (if (null e) 1
+        (max 1 (* (ceiling (extent-w e) +grid+) (ceiling (extent-h e) +grid+))))))
+
+(defun presentation-cost (p) (or (p-cost p) (p-macroblocks p)))
+
+;;; ---- per-type key functions ------------------------------------------------
+;;; DESIGN.md rule 1: the default key is a per-type key function declared alongside the type.  Raw
+;;; EQ is the fallback ONLY for objects with genuine identity — defaulting to it would be a trap,
+;;; because objects rebuilt from a file or a query are never EQ across renders, so everything would
+;;; look new and we would emit full damage forever while the code looked correct.
+
+(defvar *key-functions* (make-hash-table :test 'eq))
+
+(defmacro define-presentation-key (type (object) &body body)
+  "Declare how to derive a stable key for presentations of TYPE."
+  `(setf (gethash ',type *key-functions*) (lambda (,object) ,@body)))
+
+(defun presentation-key (type object)
+  "The stable key for OBJECT presented as TYPE.  Signals if TYPE has no key function and OBJECT has
+no obvious identity, rather than silently falling back to something unstable."
+  (let ((fn (gethash type *key-functions*)))
+    (cond (fn (funcall fn object))
+          ;; things that are their own identity
+          ((or (symbolp object) (stringp object) (numberp object) (characterp object)) object)
+          (t (error "warp: no presentation key function for type ~s, and ~s has no intrinsic~@
+                     identity.  Declare one with DEFINE-PRESENTATION-KEY — see DESIGN.md rule 1."
+                    type (type-of object))))))
+
+;;; ---- time as an input ------------------------------------------------------
+;;; DESIGN.md: `exp > now` changes when nothing changes, so NOW quantizes to a tick and the tick is
+;;; a subscribable source.  Quantizing also keeps fingerprints stable: an un-quantized clock would
+;;; make every row's fingerprint differ on every pass and defeat the whole diff.
+
+(defconstant +tick-seconds+ 60)
+
+(defun now-tick (&optional (universal (get-universal-time)))
+  "The current time, quantized to +TICK-SECONDS+.  Crossing a tick is what lets a time-dependent
+query emit ordinary GONE/CHANGED deltas."
+  (* +tick-seconds+ (floor universal +tick-seconds+)))
