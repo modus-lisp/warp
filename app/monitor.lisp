@@ -151,6 +151,17 @@ implementation — no IPC, and the gateway still enforces its own authorization 
             (row "deferred"   (format nil "~d" (or (q (getf v :pending) 100) 0))
                  (tri (getf v :pending) 0 400))
             (row "refinements" (format nil "~d" (or (getf v :cleanups) 0)))))
+      ;; connection health, from the same file.  This is the row that matters when the thing is
+      ;; broken: a failed session used to be visible only to whoever was tailing the log at that
+      ;; instant, which is nobody.
+      (let ((ok (getf st :sessions-ok)) (bad (getf st :sessions-failed))
+            (norelay (getf st :no-relay)) (err (getf st :last-error)))
+        (when (or ok bad)
+          (row "sessions" (format nil "~d ok / ~d failed" (or ok 0) (or bad 0))
+               (if (and bad (plusp bad)) :warn :ok)))
+        (when (and norelay (plusp norelay))
+          (row "no relay" (format nil "~d" norelay) :bad))
+        (when err (row "last error" (princ-to-string err) :bad)))
       (dolist (e (read-devices)) (push e rows)))
     (nreverse rows)))
 
