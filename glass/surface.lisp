@@ -25,6 +25,34 @@
 (defun trend-colour (trend)
   (case trend (:bad +bad+) (:warn +warn+) (t +ok+)))
 
+;;; ---- text on a baseline -----------------------------------------------------
+;;; GLASS:FB-TEXT positions a string by its TOP-LEFT, so a SIZE-px line drawn at Y occupies
+;;; Y..Y+SIZE.  Two consequences bit the monitor, and the second is not cosmetic:
+;;;
+;;;   * two different sizes positioned by their tops do NOT share a baseline, which reads as the
+;;;     smaller label floating above the value it labels;
+;;;   * a line whose box is taller than the room left in the row OVERFLOWS INTO THE NEIGHBOUR — and
+;;;     that is warp painting outside the extent it declared.  The reconciler told the consumer which
+;;;     rectangles changed; glass then finds dirty tiles outside every one of them.  The invariant
+;;;     this file's header claims (glass independently checks warp) is exactly what breaks.  The
+;;;     visible symptom is the descender vanishing when the row below is next painted over it.
+;;;
+;;; So: position by baseline, and derive the baseline from the row.
+
+(defun text-ascent (size &optional (font (glass:default-font)))
+  "Pixels from the top of a SIZE-px text box down to its baseline."
+  (round (* (scribe:font-ascent font) size) (scribe:font-units-per-em font)))
+
+(defun fb-text-baseline (fb x baseline string &key (size 13) (color +fg+))
+  "Draw STRING with its BASELINE at that y.  Use this, not FB-TEXT, wherever text shares a line."
+  (glass:fb-text fb x (- baseline (text-ascent size)) string :size size :color color))
+
+(defun row-baseline (y h size)
+  "A baseline that vertically centres a SIZE-px line in the row of height H starting at Y.
+Centres the em box, which keeps the whole line inside the row — the point being that the row, not
+the glyph, owns the space."
+  (+ y (floor (- h size) 2) (text-ascent size)))
+
 ;;; ---- painting --------------------------------------------------------------
 ;;; PAINT is the counterpart of PRESENT: present decides what a thing says, paint decides how it
 ;;; looks.  Keeping them apart is what lets the content double as the fingerprint.
@@ -38,11 +66,13 @@
   (let* ((e (warp:p-extent p)) (x (warp::extent-x e)) (y (warp::extent-y e))
          (w (warp::extent-w e)) (h (warp::extent-h e)))
     (glass:fb-rect fb x y w h +row-bg+)
+    ;; stop when the NEXT line would not fit entirely, so the default never paints past the extent
     (loop for line in (warp:p-fingerprint p)
           for i from 0
-          while (< (* i 12) h)
-          do (glass:fb-text fb (+ x 8) (+ y 12 (* i 12)) (princ-to-string line)
-                            :size 11 :color +fg+))))
+          for top = (+ 2 (* i 12))
+          while (<= (+ top 11) h)
+          do (fb-text-baseline fb (+ x 8) (+ y top (text-ascent 11)) (princ-to-string line)
+                               :size 11 :color +fg+))))
 
 (defun clear-extent (fb e)
   (glass:fb-rect fb (warp::extent-x e) (warp::extent-y e)
