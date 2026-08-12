@@ -214,7 +214,14 @@ One field is the thing being looked at. Every other field is a property of *the 
 single consumer nothing forces the distinction, which is exactly why it has to be written down before
 the second one arrives.
 
-> **The projection is computed once per tick and fanned out. Every other field is per consumer.**
+> **The projection is pulled once per epoch and shared. Every other field is per consumer.**
+
+Not "once per tick and fanned out" — that wording implies a shared clock and a driver, and there is
+neither: glass's WM polls each window's `dirty-p`, and `run` gives every seat its own thread. A fast
+seat and a slow seat have different ticks and neither may block the other. The invariant is
+**per-consumer-epoch idempotence**: the query runs only when a caller needs a newer epoch than the
+one it holds, so the read is a cached one, not the destructive one the mixer analogy warns about.
+Query count is the *max* of the consumers' tick counts, never the sum.
 
 glass reached the same split from the other side: a seat is one person watching a session — own
 screen, own pointer, own focus, own clipboard, own mix — over shared windows and shared window
@@ -241,13 +248,41 @@ the tell:
 The mixer is the cautionary one: two clocks pulling the same source take *alternate* frames and both
 listeners hear it at double speed with half missing. `stream` is the same hazard in a slower coat.
 
-### Co-presence and independence are the window question, not a new concept
+### Where the boundary goes: the projection holds the QUERY, not the layout
 
-Two seats holding the *same window* share its content framebuffer, so they share scroll and
-selection. That is correct — it is two people at one screen, and warp should not invent a way to
-disagree about it. Independent scroll means two windows, which means two consumers over one
-projection. glass already draws that line; warp needs no concept for it beyond letting a projection
-have more than one subscriber.
+The first draft of this rule said two consumers over one projection could scroll independently. That
+was wrong, and implementing it is what proved it: `rows-fn` returns *laid-out presentations* — extents
+already computed from a scroll offset and a viewport height — so sharing a projection necessarily
+shares scroll **and window size**. It also contradicted this document two sections up ("views
+subscribe to result-sets") and `present.lisp`'s own header ("PRESENT returns CONTENT, not pixels —
+layout then assigns extents"). `rows-fn` fuses the result-set with its layout.
+
+**The boundary belongs one level lower:**
+
+| | |
+|---|---|
+| **projection** | the query, and the domain objects it returns. `rows-fn : () -> objects` |
+| **consumer** | `present`, layout, diff, encode — and therefore scroll, viewport, and extents |
+
+The forcing argument is the same one that motivates the rule: **encodings per consumer.** A DOM
+consumer does its own layout in a browser with its own viewport; a token consumer has no extents at
+all. Neither can share a macroblock consumer's laid-out rows. Per-consumer layout is not a refinement
+of "encodings per consumer" — it is what that phrase *means* once there is a second encoding.
+
+Two consequences worth stating, because they are what the fused version got wrong:
+
+- **`view` is on the projection, not the consumer** — while layout is fused. `present` dispatches on
+  `view`, so the shared rows' fingerprints were *derived under it*, and a consumer holding a different
+  view could not diff them. A second view is a second projection. When layout moves per consumer,
+  `view` moves with it, and this restriction lifts.
+- **Co-presence stays a window question.** Two seats holding one glass window share its content
+  framebuffer, so they share scroll — that is two people at one screen and warp should not invent a
+  way to disagree about it. What they do not share is stream, budget, invoker, selection, or menu.
+
+> **Status:** shipped fused (`d0ed2bf`, `b4cf950`) — two consumers share scroll and viewport because
+> they are two seats at one window. Splitting layout out of the projection is its own change, with
+> its own no-change proof. It is half-built already: `monitor-rows` is separate from
+> `monitor-presentations`, and `layout-list` is in core.
 
 ### What this makes real
 
@@ -261,6 +296,14 @@ have more than one subscriber.
   capability that differs, rather than a separate architecture.
 - **Rule 7 gains its fourth line.** View state is per-*consumer*-per-view, keyed the way
   presentations are.
+
+### Attaching is not a resync
+
+A consumer arrives with an empty stream at generation 0, and that emptiness *is* its initial
+snapshot: there is nothing older to discard, so **attaching does not bump the generation.** `resync`
+bumps it, and stays for the case it was written for — a consumer that fell too far behind. Stated
+because the alternative is defensible and silently choosing it would break the discard rule's
+meaning.
 
 ### Doing it
 
