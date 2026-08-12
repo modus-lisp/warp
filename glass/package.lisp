@@ -11,7 +11,7 @@
            #:consumer-visible #:consumer-last-result #:consumer-painted #:consumer-emitted
            #:consumer-passes #:consumer-deferred #:consumer-stop #:consumer-presentation
            ;; the single-seat names, kept so every existing call site still works
-           #:surface #:run #:sf-fb #:sf-visible #:sf-selected
+           #:surface #:make-surface #:run #:sf-fb #:sf-visible #:sf-selected
            #:sf-painted #:sf-emitted #:sf-passes #:sf-deferred #:sf-stop
            #:menu-item #:mi-kind #:mi-command #:mi-target #:sf-menu #:sf-last-result
            #:make-surface-app #:on-pointer #:open-menu #:close-menu #:+menu-w+ #:+menu-row+

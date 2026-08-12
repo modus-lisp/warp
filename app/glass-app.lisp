@@ -17,6 +17,10 @@
 
 ;;; A designed row: the VALUE leads (that is what a glance is looking for), the name is secondary,
 ;;; and a colour bar carries the trend so it reads without being read.
+;;;
+;;; The row is drawn from two sources and it matters which is which: FINGERPRINT is what the shared
+;;; projection said this row says, and P-STATE is what THIS consumer's view state adds to it.  Two
+;;; people looking at one list see the same numbers and their own selection.
 (defmethod warp-glass:paint (fb p view)
   (declare (ignorable view))
   (let* ((e (warp:p-extent p))
@@ -25,8 +29,9 @@
          (c (warp:p-fingerprint p))
          (value (princ-to-string (first c)))
          (label (princ-to-string (second c)))
-         (trend (third c)))
-    (glass:fb-rect fb x y w h warp-glass:+row-bg+)
+         (trend (third c))
+         (selected (getf (warp:p-state p) :selected)))
+    (glass:fb-rect fb x y w h (if selected warp-glass:+row-sel+ warp-glass:+row-bg+))
     (glass:fb-rect fb x y 4 h (warp-glass:trend-colour trend))
     (glass:fb-rect fb x (+ y h -1) w 1 warp-glass:+bg+)          ; hairline separator
     ;; ONE baseline for both columns, derived from the row.  The value sets it (it is the larger

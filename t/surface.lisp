@@ -4,6 +4,15 @@
   (let ((*standard-output* (make-broadcast-stream)))
     (asdf:load-system :warp-monitor) (asdf:load-system :warp-glass)))
 (defpackage #:wst (:use #:cl)) (in-package #:wst)
+
+;;; This test invokes the REAL revoke command, whose handler rewrites the enrolment file.  The
+;;; default is the running gateway's, so point it somewhere disposable first: a test must not be
+;;; able to revoke a real terminal by passing.
+(setf warp-monitor::*devices-file* "/tmp/warp-test-devices")
+(with-open-file (s warp-monitor::*devices-file* :direction :output :if-exists :supersede
+                                                :if-does-not-exist :create)
+  (format s "aa11bb22cc 0~%dd33ee44ff 0~%"))
+
 (defvar *fails* 0)
 (defun ok (n p) (format t "~&  ~:[FAIL~;ok  ~] ~a~%" p n) (unless p (incf *fails*)))
 (defun kinds (ds) (mapcar #'warp:delta-kind ds))
