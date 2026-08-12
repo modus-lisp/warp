@@ -252,6 +252,36 @@
 (ok "and the projection still holds objects, never presentations"
     (notany (lambda (o) (typep o 'presentation)) (projection-objects *proj*)))
 
+;;; ---- 7. and the BUDGET is spent in that encoding's unit ----------------------
+;;; The seam above stops short if a delta's price is still a rectangle: a consumer whose
+;;; presentations have no extents pays a flat 1 for everything, so `budget` quietly means "N deltas
+;;; per pass" — usable, but it is not the consumer's unit.  A browser's budget is BYTES on a data
+;;; channel.  So DELTA-COST is generic on the consumer, exactly like LAY-OUT and APPLY-DELTAS.
+
+(defclass measured-consumer (wire-consumer) ())
+
+(defmethod delta-cost ((c measured-consumer) d)
+  "This encoding is billed by the length of what it would actually put on the wire."
+  (length (format nil "~a ~a ~a" (delta-kind d) (delta-key d)
+                  (and (delta-presentation d) (p-fingerprint (delta-presentation d))))))
+
+(format t "~&== a budget is denominated in the CONSUMER's unit, not in macroblocks ==~%")
+(defvar *m* (attach *proj* :class 'measured-consumer :view 'wire-view :budget 200))
+(let ((d (tick *m*)))
+  (ok "core prices an extent-less delta at a flat 1 — the macroblock default, with no rectangle"
+      (and (null (p-extent (delta-presentation (first d)))) (= 1 (delta-cost nil (first d)))))
+  (ok "the SAME delta costs this encoding something else entirely, because it said so"
+      (> (delta-cost *m* (first d)) 1))
+  (ok "so a 200-unit budget buys a number of rows the delta count cannot explain"
+      (and (plusp (length d)) (< (length d) 20) (plusp (consumer-deferred *m*))))
+  (ok "and what it was given fits the budget it was given, measured in that unit"
+      (<= (reduce #'+ (mapcar (lambda (x) (delta-cost *m* x)) d)) 200)))
+(loop repeat 30 while (plusp (consumer-deferred *m*)) do (tick *m*))
+(ok "a byte-priced consumer still drains to convergence with nothing new arriving"
+    (and (zerop (consumer-deferred *m*)) (= 20 (length (sent *m*)))))
+(ok "rule 4 is untouched by the reprice: nothing was ever sent twice"
+    (= 20 (consumer-emitted *m*)))
+
 (format t "~&== still no glass, after all of that ==~%")
 (ok "the GLASS package still does not exist" (null (find-package "GLASS")))
 (ok "and neither does WARP-GLASS" (null (find-package "WARP-GLASS")))

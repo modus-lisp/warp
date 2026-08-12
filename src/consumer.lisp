@@ -223,7 +223,11 @@ changed fingerprint and therefore a :changed delta."
   (multiple-value-bind (objects as-of) (pull (consumer-projection c) c)
     (let ((rows (append (lay-out c objects as-of) (menu-presentations c))))
       (multiple-value-bind (deltas deferred)
-          (funcall emitter (consumer-stream c) rows :budget (consumer-budget c))
+          ;; the budget is THIS consumer's, and so is the unit it is spent in: DELTA-COST is
+          ;; dispatched on C, so a framebuffer spends macroblocks and a browser spends bytes
+          ;; without either of them knowing the other exists.
+          (funcall emitter (consumer-stream c) rows
+                   :budget (consumer-budget c) :consumer c)
         (incf (consumer-passes c))
         (incf (consumer-emitted c) (length deltas))
         (setf (consumer-deferred c) deferred

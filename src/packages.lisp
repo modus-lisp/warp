@@ -14,6 +14,8 @@
    #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent
    #:delta-stream #:make-delta-stream #:ds-generation #:ds-pending-count
    #:emit #:snapshot
+   ;; what a delta COSTS is the encoding's, because a budget is denominated in the consumer's link
+   #:delta-cost
    ;; commands
    #:command #:cmd-name #:cmd-arg-type #:cmd-destructive #:cmd-confirm #:cmd-cost #:cmd-label
    #:define-command #:define-command-authorization #:find-command

@@ -88,7 +88,31 @@ Pure: computes what is owed, decides nothing about budget."
     (:moved 2)       ; cheap, and it keeps navigation responsive
     (:changed 3)))
 
-(defun %delta-cost (d)
+;;; ---- cost is the ENCODING's, because a budget is denominated in the consumer's link -----------
+;;;
+;;; This used to be a plain function counting 16px macroblocks, and that quietly made rule 4's
+;;; budget a PIXEL budget for every consumer in existence.  For a framebuffer that is exactly right —
+;;; the thing that gets spent is dirty tiles.  For a consumer whose extents are NIL every delta cost
+;;; a flat 1, so `budget` silently degenerated into "N deltas per pass": usable, but it is not the
+;;; consumer's unit.  A DOM consumer's budget is BYTES on a data channel and a token consumer's is
+;;; tokens, and neither can be derived from a rectangle.
+;;;
+;;; So the price of a delta is a question asked of the CONSUMER, exactly like LAY-OUT and
+;;; APPLY-DELTAS.  Nothing else about rule 4 moves: deferral is still acknowledged-state-lagging,
+;;; the drain is still re-derivation, supersession is still by key, and the ordering is still
+;;; unseen-before-prettier.  Only the number changes, and only for an encoding that says so.
+
+(defgeneric delta-cost (consumer delta)
+  (:documentation "What DELTA costs this CONSUMER, in whatever unit its budget is denominated in.
+Macroblocks for a framebuffer, serialized bytes for a browser, tokens for a model.
+
+The default below is the macroblock count of the delta's extent, which is the unit core's OWN
+default layout produces (grid-snapped rectangles, DESIGN.md rule 3) — so the default cost and the
+default layout agree with each other, and an encoding that lays out in something other than pixels
+is the one obliged to say what it is spending."))
+
+(defmethod delta-cost (consumer (d delta))
+  (declare (ignore consumer))
   (if (eq (delta-kind d) :moved)
       1                                       ; a translation asserts, it does not re-send content
       (let ((p (delta-presentation d)))
@@ -98,15 +122,19 @@ Pure: computes what is owed, decides nothing about budget."
 
 ;;; ---- emission --------------------------------------------------------------
 
-(defun emit (stream current &key (budget most-positive-fixnum))
+(defun emit (stream current &key (budget most-positive-fixnum) consumer)
   "Advance STREAM toward CURRENT (a list of presentations) within BUDGET.  Returns
 (values deltas deferred-count).  Deltas that do not fit are simply not emitted — the stream's
 delivered state does not advance for them, so the next call re-derives them, coalesced with any
-newer change.  Nothing to strand."
+newer change.  Nothing to strand.
+
+CONSUMER is who the budget belongs to, and it is here for one reason: a stream and a number cannot
+price a delta.  It is optional so that the reconciler stays usable on its own — the harnesses and
+the film demo drive EMIT with no consumer at all — and NIL simply selects the default DELTA-COST."
   (let* ((owed (sort (%diff (ds-delivered stream) current) #'< :key #'%priority))
          (spent 0) (emitted '()) (deferred 0))
     (dolist (d owed)
-      (let ((cost (%delta-cost d)))
+      (let ((cost (delta-cost consumer d)))
         (cond
           ((or (null emitted) (<= (+ spent cost) budget))   ; always make progress on the first
            (incf spent cost)
@@ -119,12 +147,12 @@ newer change.  Nothing to strand."
     (setf (ds-pending-count stream) deferred)
     (values (nreverse emitted) deferred)))
 
-(defun snapshot (stream current &key (budget most-positive-fixnum))
+(defun snapshot (stream current &key (budget most-positive-fixnum) consumer)
   "Resync: forget what the consumer was believed to hold and re-announce the whole working set,
 chunked by the same budget discipline.  Bumps the generation — DESIGN.md rule 4: snapshot chunks
 carry the generation, and deltas older than it must be discarded, which is where key-mismatch bugs
 breed.  Returns (values deltas deferred-count generation)."
   (clrhash (ds-delivered stream))
   (incf (ds-generation stream))
-  (multiple-value-bind (deltas deferred) (emit stream current :budget budget)
+  (multiple-value-bind (deltas deferred) (emit stream current :budget budget :consumer consumer)
     (values deltas deferred (ds-generation stream))))

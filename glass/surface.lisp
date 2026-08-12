@@ -117,6 +117,16 @@ warp's and is not repeated here."
   (or (consumer-viewport-h c) (and (consumer-fb c) (glass:fb-height (consumer-fb c)))
       (call-next-method)))
 
+;;; ---- what a delta costs THIS encoding ---------------------------------------
+;;; DELTA-COST is generic on the consumer, and this encoding deliberately does not specialise it:
+;;; its unit is 16px macroblocks, which is what core's default already counts because core's default
+;;; layout is the grid-snapped one (rule 3).  The budget in MAKE-SURFACE-APP is "roughly a third of
+;;; this window's tiles", and that is the same number the encoder spends.
+;;;
+;;; Said out loud rather than left to inheritance, because the default is a pixel answer sitting in
+;;; a package that is otherwise pixel-free: if core's default layout ever stops producing rectangles
+;;; this file is the one that owes a method, not the one that silently keeps working.
+
 ;;; ---- the encoding: deltas become framebuffer writes -------------------------
 
 (defmethod apply-deltas ((c fb-consumer) deltas)
