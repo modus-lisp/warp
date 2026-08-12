@@ -17,7 +17,7 @@
                 #:projection-consumers #:pull
                 ;; the consumer: the seat, and the protocol generic on it
                 #:consumer #:detach #:tick #:tick-all #:resync
-                #:lay-out #:apply-deltas #:menu-presentations #:delta-cost
+                #:lay-out #:apply-deltas #:menu-presentations #:delta-cost #:moved-p
                 #:viewport-width #:viewport-height #:content-height #:scroll-to #:scroll-by
                 #:consumer-projection #:consumer-rows-fn #:consumer-view #:consumer-stream
                 #:consumer-budget #:consumer-invoker #:consumer-selected #:consumer-menu
@@ -33,7 +33,7 @@
            #:projection-objects #:projection-as-of
            #:projection-epoch #:projection-queries #:projection-consumers #:pull
            #:consumer #:attach #:detach #:tick #:tick-all #:resync
-           #:lay-out #:apply-deltas #:delta-cost #:scroll-to #:scroll-by #:content-height
+           #:lay-out #:apply-deltas #:delta-cost #:moved-p #:scroll-to #:scroll-by #:content-height
            #:viewport-width #:viewport-height #:menu-presentations
            #:consumer-projection #:consumer-view #:consumer-rows-fn #:consumer-stream
            #:consumer-budget #:consumer-invoker #:consumer-selected #:consumer-menu

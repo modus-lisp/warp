@@ -32,19 +32,36 @@
 (defun make-delta-stream () (%make-delta-stream))
 
 ;;; ---- diffing ---------------------------------------------------------------
+;;;
+;;; P-EXTENT is where a presentation records WHERE IT IS, and "where" is a claim only an encoding
+;;; can make.  For a framebuffer it is the rectangle (x y w h) rule 3 snaps to the grid.  For a
+;;; browser it is a sibling position — a DOM has no coordinates to translate, only an order.  The
+;;; slot is compared with EQUAL either way, so "same place" needs no generic; what does is
+;;; recognising a REPOSITION, because rule 2's whole point is that moving is cheaper than changing
+;;; and only the encoding knows what moving looks like.
 
-(defun %translation (old new)
-  "If OLD and NEW differ only by position, the (dx dy); else NIL."
+(defgeneric moved-p (consumer old new)
+  (:documentation "Non-NIL when NEW is OLD in a different PLACE — the case DESIGN.md rule 2 exists
+to make cheap.  Returns (dx dy) if this encoding's position is a translation, and any other
+non-NIL value if it merely reordered: a browser calls insertBefore, which has no vector.
+
+The default is the pixel one, and it is the encoding's job to disagree.  Returning NIL when the
+position genuinely differs is safe — the diff falls through to :changed, which resends the content
+along with the new place."))
+
+(defmethod moved-p (consumer old new)
+  (declare (ignore consumer))
   (let ((a (p-extent old)) (b (p-extent new)))
-    (when (and a b
+    (when (and (rect-p a) (rect-p b)
                (= (extent-w a) (extent-w b))
                (= (extent-h a) (extent-h b)))
       (let ((dx (- (extent-x b) (extent-x a))) (dy (- (extent-y b) (extent-y a))))
         (unless (and (zerop dx) (zerop dy)) (list dx dy))))))
 
-(defun %diff (delivered current)
+(defun %diff (consumer delivered current)
   "Deltas that would bring DELIVERED (key -> presentation) to CURRENT (a list of presentations).
-Pure: computes what is owed, decides nothing about budget."
+Pure: computes what is owed, decides nothing about budget.  CONSUMER is here only so MOVED-P can
+be asked in the right encoding; NIL takes the pixel default."
   (let ((out '()) (seen (make-hash-table :test 'equal)))
     (dolist (new current)
       (let* ((key (p-key new)) (old (gethash key delivered)))
@@ -53,16 +70,20 @@ Pure: computes what is owed, decides nothing about budget."
           ((null old)
            (push (%make-delta :kind :appeared :key key :presentation new :extent (p-extent new)) out))
           (t
-           (let ((moved (%translation old new))
-                 ;; the projection's content AND this consumer's view state: a row the consumer has
-                 ;; selected does not look the way it was told it looks (DESIGN.md rules 7 and 8)
-                 (same-look (and (equal (p-fingerprint old) (p-fingerprint new))
-                                 (equal (p-state old) (p-state new)))))
+           (let* (;; the projection's content AND this consumer's view state: a row the consumer
+                  ;; has selected does not look the way it was told it looks (rules 7 and 8)
+                  (same-look (and (equal (p-fingerprint old) (p-fingerprint new))
+                                  (equal (p-state old) (p-state new))))
+                  ;; asked only when the content held, so an encoding is never questioned about a
+                  ;; move that a content change has already superseded
+                  (moved (and same-look (moved-p consumer old new))))
              (cond
-               ;; unchanged content that merely translated: the cheap case rule 2 exists for
-               ((and same-look moved)
+               ;; unchanged content that merely moved: the cheap case rule 2 exists for
+               (moved
                 (push (%make-delta :kind :moved :key key :presentation new
-                                   :extent (p-extent new) :dx (first moved) :dy (second moved))
+                                   :extent (p-extent new)
+                                   :dx (if (consp moved) (or (first moved) 0) 0)
+                                   :dy (if (consp moved) (or (second moved) 0) 0))
                       out))
                ((and same-look (equal (p-extent old) (p-extent new))) nil)   ; nothing owed
                (t
@@ -118,7 +139,9 @@ is the one obliged to say what it is spending."))
       (let ((p (delta-presentation d)))
         (if p (presentation-cost p)
             (let ((e (delta-extent d)))        ; :gone — cost of repairing the hole
-              (if e (max 1 (* (ceiling (extent-w e) +grid+) (ceiling (extent-h e) +grid+))) 1))))))
+              (if (rect-p e)
+                  (max 1 (* (ceiling (extent-w e) +grid+) (ceiling (extent-h e) +grid+)))
+                  1))))))
 
 ;;; ---- emission --------------------------------------------------------------
 
@@ -131,7 +154,7 @@ newer change.  Nothing to strand.
 CONSUMER is who the budget belongs to, and it is here for one reason: a stream and a number cannot
 price a delta.  It is optional so that the reconciler stays usable on its own — the harnesses and
 the film demo drive EMIT with no consumer at all — and NIL simply selects the default DELTA-COST."
-  (let* ((owed (sort (%diff (ds-delivered stream) current) #'< :key #'%priority))
+  (let* ((owed (sort (%diff consumer (ds-delivered stream) current) #'< :key #'%priority))
          (spent 0) (emitted '()) (deferred 0))
     (dolist (d owed)
       (let ((cost (delta-cost consumer d)))

@@ -9,13 +9,14 @@
    #:p-key #:p-type #:p-object #:p-extent #:p-as-of
    #:p-fingerprint #:p-state #:p-children #:p-cost
    #:define-presentation-key #:presentation-key
-   #:+grid+ #:snap #:snap-extent #:extent-x #:extent-y #:extent-w #:extent-h
+   #:+grid+ #:snap #:snap-extent #:rect-p #:extent-x #:extent-y #:extent-w #:extent-h
    ;; the delta stream
    #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent
    #:delta-stream #:make-delta-stream #:ds-generation #:ds-pending-count
    #:emit #:snapshot
-   ;; what a delta COSTS is the encoding's, because a budget is denominated in the consumer's link
-   #:delta-cost
+   ;; what a delta COSTS, and what MOVING looks like, are the encoding's: a budget is denominated in
+   ;; the consumer's link, and a browser reorders siblings where a framebuffer translates pixels
+   #:delta-cost #:moved-p
    ;; commands
    #:command #:cmd-name #:cmd-arg-type #:cmd-destructive #:cmd-confirm #:cmd-cost #:cmd-label
    #:define-command #:define-command-authorization #:find-command

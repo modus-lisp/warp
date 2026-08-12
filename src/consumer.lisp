@@ -192,10 +192,17 @@ tell them apart: the fingerprint is PRESENT's output, and P-STATE is what this s
     ps))
 
 ;;; ---- scroll is per consumer, which is the point ------------------------------
+;;; And it is in the consumer's OWN UNITS.  A framebuffer scrolls in pixels; a browser reports "I
+;;; can show 12 rows and I am 3 rows down" and scrolls in rows, because a DOM list has no pixel
+;;; offset the server could know.  SCROLL-TO clamps against CONTENT-HEIGHT and VIEWPORT-HEIGHT, so
+;;; making CONTENT-HEIGHT generic is the whole of what an encoding needs to change the axis — rule 7
+;;; keeps ONE scroll slot and the clamp keeps working.
 
-(defun content-height (c)
-  (list-content-height (projection-objects (consumer-projection c))
-                       :row-height (consumer-row-height c)))
+(defgeneric content-height (consumer)
+  (:documentation "How far this consumer could scroll, in whatever unit its scroll offset is in.")
+  (:method ((c consumer))
+    (list-content-height (projection-objects (consumer-projection c))
+                         :row-height (consumer-row-height c))))
 
 (defun scroll-to (c y)
   "Set this consumer's scroll offset, clamped to its own content and its own viewport.  Its

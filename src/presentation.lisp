@@ -58,12 +58,29 @@
 ;;; recover which half was which from a merged blob.  What did go away is the copy-on-write
 ;;; machinery around it: the consumer builds these presentations, so it just annotates its own.
 
+;;; EXTENT is where a presentation records WHERE IT IS, and "where" is a claim only an encoding can
+;;; make.  The framebuffer's is the rectangle above.  A DOM consumer's is (parent . after-key),
+;;; because a browser places nodes by sibling order and has no coordinates to translate; a token
+;;; consumer's may be nothing at all.  So everything in core that reads an extent AS GEOMETRY has to
+;;; ask first, and answer harmlessly when the answer is no — a pixel default that crashes on a
+;;; position it does not recognise is a pixel assumption with a stack trace attached, which is the
+;;; same bug as a pixel assumption without one.
+
+(defun rect-p (e)
+  "Is E a framebuffer extent — a PROPER list of exactly four reals?  Spelled out cons by cons
+because the position it is being asked about may be an improper list (a DOM's is a dotted
+(parent . after)), and LIST-LENGTH signals on one."
+  (and (consp e) (consp (cdr e)) (consp (cddr e)) (consp (cdddr e)) (null (cddddr e))
+       (every #'realp e)))
+
 (defun p-macroblocks (p)
-  "How many 16px macroblocks this presentation's extent covers — the natural cost unit, since the
-consumer's budget is ultimately spent in them."
+  "How many 16px macroblocks this presentation's extent covers — the natural cost unit for an
+encoding that ends in an encoder.  A position that is not a rectangle costs one unit, exactly as a
+missing one does: core has no way to price somebody else's geometry and does not pretend to."
   (let ((e (p-extent p)))
-    (if (null e) 1
-        (max 1 (* (ceiling (extent-w e) +grid+) (ceiling (extent-h e) +grid+))))))
+    (if (rect-p e)
+        (max 1 (* (ceiling (extent-w e) +grid+) (ceiling (extent-h e) +grid+)))
+        1)))
 
 (defun presentation-cost (p) (or (p-cost p) (p-macroblocks p)))
 
