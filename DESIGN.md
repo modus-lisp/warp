@@ -79,10 +79,19 @@ So a subtree may report **`:moved (dx dy)`**, distinct from `:changed`. For pixe
 moved, contents unchanged"* as one assertion instead of fifty re-sends. Scroll and re-sort are cheap
 **semantically**, not merely as motion vectors.
 
-> **Status:** the pixel payoff is not there yet. Our capture marks the CopyRect *destination* dirty
-> and the encoder re-codes it with ZEROMV, so a translation currently costs what a change costs.
-> `:moved` is designed in now because it is a *wire* concept and retrofitting it after clients exist
-> would be a migration. It goes cheap when VP8 motion vectors land.
+> **Status:** the pixel payoff is still not there — our capture marks the CopyRect *destination*
+> dirty and the encoder re-codes it with ZEROMV, so a translation costs what a change costs, until
+> VP8 motion vectors land. **But `:moved` has paid, in the encoding it was not designed for.** The DOM
+> consumer has no absolute coordinates, so rows a scroll did not touch genuinely do not move: a
+> one-row scroll is 1 `gone` + 1 `appeared` + **1** `moved`, against the framebuffer's 1 + 1 + **13**.
+> Designing a wire concept in before its first client was the right call for the wrong client.
+>
+> Two corrections that encoding forced. A **translation vector is a pixel notion** — a browser
+> reorders nodes rather than shifting them — so `moved-p` may answer a bare `t`, and `(dx dy)` is the
+> framebuffer's dialect rather than the protocol's. And **`extent` is over-named**: only the
+> framebuffer's position is a rectangle. The DOM's is `(parent . after-key)` — precisely what
+> `insertBefore` takes. Position is *the encoding's claim*, and the tuple in "Two ideas, one refusal"
+> should be read that way.
 
 Without this the transport argument holds for edits and collapses for navigation — and navigation is
 most of what a finger does to a list.
@@ -109,6 +118,14 @@ Two disciplines that sound obvious and were both learned the hard way:
 - **Unseen before prettier.** When both are owed, deliver *content the consumer has never seen*
   before *improving quality of what it has*. We had to make the pending-drain outrank the idle
   refinement pass explicitly; correctness of the working set outranks fidelity of it.
+- **Ordering within a pass is by priority only** — and an encoding whose positions are *relative*
+  must therefore tolerate an anchor it has not been told about yet. `%diff` emits within a band in
+  reverse layout order, so appending two rows sends `r05 after r04` **before** `r04`; the DOM client's
+  first screenshot rendered a row second that the wire said was last, silently. Emitting in layout
+  order would fix that case and is still not sufficient: **the budget can defer an anchor to a later
+  pass entirely**, and no server-side ordering repairs that. So the obligation is the client's — park
+  an unplaceable node *out of the document* until its anchor arrives, never in a position you
+  invented. A framebuffer never noticed because absolute coordinates have no anchors.
 
 ### The stream carries state, not events
 
@@ -461,10 +478,21 @@ means the *view* has no way to learn that a row lapsed. When differential datafl
 
 ## Consumer-negotiated slices
 
-One asymmetry worth stating, because it is the only place the consumers genuinely differ: **an agent
-can renegotiate its own viewport; a human cannot.** A model can ask for fewer fields, different
-rows, deltas-only. A human's viewport is fixed by physics and their attention is not re-targetable
-on request.
+The first draft of this section said **an agent can renegotiate its own viewport; a human cannot** —
+a model asks for fewer fields, different rows, deltas-only, while a human's viewport is fixed by
+physics. The DOM encoding falsified it on arrival: a browser is a human surface that reports its own
+viewport and scroll offset, in rows, and is sliced accordingly.
+
+The line is not human/agent. It is **whether the consumer can measure itself.**
+
+- A **framebuffer cannot**: it is handed a size and lays out into it. Its slice is curated — someone
+  chose it in advance.
+- A **browser can**, and so can a model. Both tell the server what they can hold, and the server
+  slices to fit.
+
+Attention is still not re-targetable on request the way a context window is, so *what* a human is
+offered stays editorial. But *how much of it travels* is negotiated by anything that knows its own
+capacity, and that is a property of the surface rather than of the species behind it.
 
 So: the protocol is shared, but *slice negotiation* is a consumer capability. Human surfaces are
 curated — someone chose the slice in advance. Agent surfaces are negotiated. Same tree, same deltas,
