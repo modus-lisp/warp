@@ -32,9 +32,22 @@ The protocol is in `warp` and depends on `bordeaux-threads` and nothing else. **
 One projection, one query, several consumers, each with its own stream, budget, viewport, scroll,
 selection and invoker.
 
+**A transport is a function of one string.** `dom/channel.lisp` is a consumer, a clock and a link,
+where the link is `(lambda (frame) ...)` and nothing else — plus the four things a host would
+otherwise write by hand around it: one lock over ticks and messages, a send that cannot signal, and
+a close that runs on every unwind path. It has two callers, a local WebSocket and a WebRTC data
+channel in the glass-webrtc gateway, and they share `dom/client.js` as well.
+
 - `demo/two-encodings.lisp` — a framebuffer and a browser over one query, asserted rather than drawn
 - `demo/serve-dom.lisp` — the DOM consumer live in a browser on a local port
-- `t/browser.sh` — the same thing verified in a headless Chromium
+- `t/channel.lisp` — the channel, over a fake transport: deltas out, gestures in, budget in bytes,
+  owner and guest on one projection, and a guest's `revoke` refused at invocation
+- `t/browser.sh` / `t/panel.sh` — the standalone client, and the phone panel, in a headless Chromium
+- `t/nochange.lisp` — a 40-step scripted session over both encodings, dumped per step, so a
+  refactor can be *shown* to have changed nothing
 - `demo/damage-film.lisp` — the delta stream, rendered so you can watch it
 
-First practical client is the pipeline monitor (`app/`), not the device manager.
+The first practical client was the pipeline monitor (`app/`). **Client one — the device manager —
+now runs too**, inside the glass-webrtc gateway, over the enrolment file that gateway writes, with
+the invoker taken from the authenticated Nostr identity: an allowlisted owner is offered `revoke`,
+an enrolled guest is not, and a guest who sends it anyway is refused by `invoke`.

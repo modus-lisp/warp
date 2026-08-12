@@ -207,6 +207,26 @@ independent reason the refusal of translators is not merely discipline.
 - **Authorization is enforced at invocation, in the gateway.** Menu filtering is courtesy, not
   security. The GUI must not become a second enforcement point someone later trusts.
 
+> **Status: literally true now, and the phrasing turned out to be exact.** warp runs *inside* the
+> glass-webrtc gateway, over the enrolment file that gateway writes, and `revoke` is refused by
+> `invoke` on the same process that would have refused the DM. An allowlisted owner is offered it;
+> an enrolled guest is not, and a guest that names it anyway over the wire gets nothing.
+>
+> **What the rule did not say, and had to learn: where the invoker comes from.** The gateway already
+> classified every connection — `code`, `allowlist`, `device`, first match wins — and reusing that
+> string is the obvious move and is wrong in *both* directions at once. An owner who arrives holding
+> a magic link classifies as `code`, so mapping it demotes the owner; a guest who was sent the same
+> link also classifies as `code`, so mapping it promotes the guest. One string, two opposite
+> authorities, because it was computed to answer a different question (*may this connection open at
+> all*) than the one the menu asks (*who is this*).
+>
+> So, as a fourth line under this rule:
+>
+> **The invoker is the output of the same predicate the policy is written against — never a nearby
+> value computed for a different question.** Here that is literally `authorized-p`, the function the
+> DM surface calls `admin`. Two surfaces, one predicate, and no way for them to drift; a second
+> answer to "who is this" is the same failure as a second answer to "may they", one step earlier.
+
 ## Rule 7 — view state is presentations too
 
 Scroll offset, selection, expanded/collapsed. Server-side (the client is a dumb glass),
@@ -490,6 +510,18 @@ The line is not human/agent. It is **whether the consumer can measure itself.**
 - A **browser can**, and so can a model. Both tell the server what they can hold, and the server
   slices to fit.
 
+> **The negotiation is a convergence, not a handshake** — which is the one thing this section got
+> to find out by being on a real link. The server seats a consumer at *its own* default row count
+> and its clock is already running, so the first frame carries that default; the browser's report
+> then trims it and the difference comes back as ordinary `gone` deltas. Nobody waits for anybody.
+>
+> That is worth stating because the alternative is so tempting: make the viewport report part of
+> opening the channel, and let the first frame be correct. It would cost a handshake on a transport
+> that deliberately has none — the data channel is negotiated precisely so that neither end has to
+> announce itself — and it would make the slice a thing you agree once rather than a thing you can
+> change, which is exactly wrong for a phone that rotates. Say the current state and let the stream
+> close the gap: the same discipline as everything else here, applied to the viewport.
+
 Attention is still not re-targetable on request the way a context window is, so *what* a human is
 offered stays editorial. But *how much of it travels* is negotiated by anything that knows its own
 capacity, and that is a property of the surface rather than of the species behind it.
@@ -561,6 +593,36 @@ check.
 - authorization at invocation, in the gateway
 - view state — selection survives the file changing underneath
 - ships as warp's first **committed** view, because a human must trust it with revoke
+
+> **Status: shipped, on the real gateway, on real enrolments, with real authorization.** warp runs
+> inside `gateway-nostr.lisp` over its own `.glass-devices`, on a third negotiated data channel
+> (stream 102) beside `rfb` and `control`, and the phone's client has a ▤ panel that lists the
+> enrolled terminals and revokes one with a hold and a tap. Every bullet above is now a thing that
+> happened rather than a thing that would.
+>
+> The claim it was making all along — *the DM interface, a CLI, the GUI and an agent become surfaces
+> of one command set, with authorization written once* — is now checkable rather than argued: the
+> DM path and the panel reach the same `revoke`, and the panel's write is picked up by the
+> gateway's own `sync-devices`, so a terminal revoked from a phone is refused on its next
+> connection with nothing restarted.
+>
+> **Three things it cost that the plan did not have a line for**, all of them at the boundary rather
+> than in the protocol:
+>
+> - **A channel is not a sink.** The encoding's side really was a sink and a function, as promised.
+>   The *host's* side is a clock, one lock over ticks and messages, a send that must not signal, and
+>   a close that runs on every unwind path — four disciplines, identical for a WebSocket and for an
+>   SCTP stream, and the local server had quietly written each of them out by hand. They are
+>   `dom/channel.lisp` now, which is why the gateway's share is 29 lines.
+> - **Being unrunnable is a design input.** The gateway carries a live session and may not be
+>   started, so its code is verified by reading and by nothing else. That does not make testing
+>   optional, it makes *how much code is in there* the thing under design — and it is a surprisingly
+>   good forcing function, because "what is the smallest thing I could put in the place I cannot
+>   check" is a better question than "how do I test this".
+> - **A disabled feature must drop, not decline.** The new dispatch branch claims its stream id
+>   whether or not the feature is on. Gated instead, a client that had the panel talking to a box
+>   that did not would have fallen through to the next branch — which is the RFB stream, and would
+>   have handed a desktop a JSON object as input.
 
 ## Extract under load
 
