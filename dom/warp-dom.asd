@@ -14,7 +14,11 @@
     :serial t
     :components ((:file "package")
                  (:file "json")        ; the wire format, and why it is JSON
-                 (:file "consumer")))));  lay-out, moved-p, delta-cost, apply-deltas, menu, input
+                 (:file "consumer")    ; lay-out, moved-p, delta-cost, apply-deltas, menu, input
+                 ;; a consumer, a clock and a link — with the link still only a function of one
+                 ;; string.  Everything a HOST would otherwise have to write around the sink, so
+                 ;; that the part which cannot be tested offline is three calls that never signal.
+                 (:file "channel")))))
 
 ;; The transport, kept OUT of the encoding.  A DOM consumer over a WebRTC data channel and one over
 ;; a local WebSocket are the same five methods with a different sink, so the socket is a separate

@@ -1,14 +1,12 @@
 <!doctype html>
 <!--
-  warp — the DOM encoding's client.  Vanilla JS, no framework, no build step, one file.
+  warp — the DOM encoding's client, over a local WebSocket.
 
-  It is deliberately small, and the smallness is the argument.  The client holds a Map from key to
-  node and does four things with a delta: create, replace content, re-anchor, remove.  It does not
-  diff, does not reconcile, does not keep a shadow tree and does not know what a projection is —
-  all of that happened on the server, which is what "the stream carries state, not events" buys.
-
-  It also does not decide anything about safety.  The menu it draws is whatever the server sent it;
-  it cannot invent a command, and if it tried, the server would refuse it at invocation (rule 6).
+  THE LOGIC IS NOT IN THIS FILE.  It is in client.js, which this page and the glass-webrtc phone
+  client both load unmodified: a frame is a frame, and a client that behaved differently depending
+  on whether the bytes came from a socket or an SCTP stream would be a second client to keep in
+  step.  What lives here is the two things that ARE this page's: a stylesheet, and the fact that
+  its transport is a WebSocket.
 -->
 <meta charset="utf-8">
 <title>warp :: dom consumer</title>
@@ -47,199 +45,33 @@
 <ul id="rows"></ul>
 <ul id="menu"></ul>
 
+<script src="/client.js"></script>
 <script>
 "use strict";
-const rowsEl = document.getElementById("rows");
-const menuEl = document.getElementById("menu");
 const statEl = document.getElementById("stat");
 const bytesEl = document.getElementById("bytes");
-
-// key -> {key, node, in, after}.  This is the client's ENTIRE model.  The server holds the memory of
-// what we have been told; we hold the nodes it named and the anchor each one was given.
-const nodes = new Map();
-
-// Anchor key -> the records waiting for it.  THIS IS NOT DEFENSIVE PADDING, it is load-bearing, and
-// it is the one thing an anchor-based encoding needs that a rectangle-based one does not.
-//
-// A rectangle is absolute: deltas carrying rectangles can be applied in any order at all.  An
-// anchor is RELATIVE, so "insert X after Y" is unappliable until Y exists — and two independent
-// things make that happen:
-//
-//   * the reconciler emits within a priority band in reverse layout order, so a pass that appends
-//     two rows sends `r05 after r04` before it sends `r04`;
-//   * and even in layout order, the BUDGET can defer the anchor to a later pass entirely, which no
-//     ordering rule on the server could fix.
-//
-// So a node whose place we do not know yet is held OUT of the document rather than dropped into a
-// place we invented, and it is inserted the moment its anchor lands.  Guessing would put a row in
-// the wrong place and leave it there, which is exactly the silent-wrong-order failure this
-// encoding's positions exist to prevent.
-const waiting = new Map();
-let gen = 0, frames = 0, bytes = 0, deltas = 0;
-
 const ROWS = 14;                      // what this viewport can show; reported to the server
-let scroll = 0;
 
 // The query string is passed through to the socket so the demo can seat a guest (?as=device)
 // alongside an owner.  It can only ever NARROW what the server grants — see INVOKER-FOR.
 const ws = new WebSocket("ws://" + location.host + "/warp" + location.search);
 
-ws.onopen = () => {
-  statEl.textContent = "connected";
-  send({t: "viewport", rows: ROWS, scroll: scroll});
-};
+const client = makeWarpClient({
+  rows: document.getElementById("rows"),
+  menu: document.getElementById("menu"),
+  viewportRows: ROWS,
+  send: (o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); },
+  onStat: (s) => {
+    statEl.textContent = `gen ${s.gen} · ${s.nodes} nodes · ${s.deltas} deltas`;
+    bytesEl.textContent = `${s.frames} frames / ${s.bytes} B`;
+  }
+});
+client.attachGestures(document);
+
+ws.onopen = () => { statEl.textContent = "connected"; client.hello(ROWS, 0); };
 ws.onclose = () => { statEl.textContent = "closed"; };
-ws.onmessage = (ev) => {
-  bytes += ev.data.length; frames++;
-  const frame = JSON.parse(ev.data);
-  // rule 4: snapshot chunks carry a generation, and anything older than the newest is discarded.
-  if (frame.gen < gen) return;
-  if (frame.gen > gen) { gen = frame.gen; }
-  for (const d of frame.deltas) { deltas++; apply(d); }
-  statEl.textContent = `gen ${gen} · ${nodes.size} nodes · ${deltas} deltas`;
-  bytesEl.textContent = `${frames} frames / ${bytes} B`;
-};
-
-function send(o) { if (ws.readyState === 1) ws.send(JSON.stringify(o)); }
-
-function container(name) {
-  return name === "rows" ? rowsEl : menuEl;
-}
-
-// The four kinds, and nothing else.  Note what is NOT here: no re-render, no keyed list diff, no
-// virtual DOM.  A :moved does not touch the node's content, which is the entire point of rule 2.
-function apply(d) {
-  const rec = nodes.get(d.key);
-  switch (d.k) {
-    case "appeared": {
-      const li = document.createElement("li");
-      li.dataset.key = d.key;
-      paint(li, d);
-      const r = {key: d.key, node: li, in: d.in, after: d.after};
-      nodes.set(d.key, r);
-      place(r);
-      break;
-    }
-    case "changed": {
-      if (!rec) return;
-      paint(rec.node, d);
-      rec.in = d.in; rec.after = d.after;
-      place(rec);
-      break;
-    }
-    case "moved": {
-      if (!rec) return;
-      rec.in = d.in; rec.after = d.after;
-      place(rec);                   // content untouched: the node is re-anchored, not rebuilt
-      break;
-    }
-    case "gone": {
-      if (!rec) return;
-      rec.node.remove();
-      nodes.delete(d.key);
-      break;
-    }
-  }
-}
-
-// `after` is the key of the sibling this node follows, null meaning first child.  That is the whole
-// of the DOM's positional vocabulary and it is exactly what the server sends.
-function place(rec) {
-  const parent = container(rec.in);
-  if (rec.after == null) {
-    if (rec.node.parentNode !== parent || parent.firstChild !== rec.node) {
-      parent.insertBefore(rec.node, parent.firstChild);
-    }
-  } else {
-    const a = nodes.get(rec.after);
-    if (!a || a.node.parentNode !== parent) {   // the anchor has not arrived, or is itself parked
-      let w = waiting.get(rec.after);
-      if (!w) waiting.set(rec.after, w = []);
-      if (!w.includes(rec)) w.push(rec);
-      if (rec.node.parentNode) rec.node.remove();
-      return;
-    }
-    if (rec.node.parentNode !== parent || rec.node.previousSibling !== a.node) {
-      parent.insertBefore(rec.node, a.node.nextSibling);
-    }
-  }
-  const w = waiting.get(rec.key);               // anything that was waiting on us can go in now
-  if (w) { waiting.delete(rec.key); for (const r of w) place(r); }
-}
-
-function paint(li, d) {
-  const cells = d.cells || [];
-  if (d.type === "menu-item") {
-    li.className = cells[2] === "destructive" ? "destructive" : "";
-    li.innerHTML = "";
-    li.append(cell("t", cells[0]));
-    if (cells[1]) li.append(cell("c", cells[1]));
-  } else {
-    li.className = (d.state && d.state.selected) ? "selected " + trend(cells[2]) : trend(cells[2]);
-    li.innerHTML = "";
-    li.append(cell("v", cells[0]), cell("l", cells[1]));
-    // as_of is on every delta because DESIGN.md makes staleness first-class: under a budget a
-    // delta can arrive several passes late, and the consumer is entitled to see it.
-    if (d.as_of) { const s = cell("stale", "as of " + d.as_of); li.append(s); }
-  }
-}
-function trend(t) { return t === "bad" ? "bad" : t === "warn" ? "warn" : ""; }
-function cell(cls, text) {
-  const s = document.createElement("span");
-  s.className = cls; s.textContent = text == null ? "" : String(text);
-  return s;
-}
-
-// ---- gestures: recognized HERE, sent as semantics.  Rule 5's vocabulary is closed and this file
-// does not extend it — every browser event below lands on tap / hold / two-finger.
-
-let holdTimer = null, held = null;
-
-function keyAt(ev) {
-  const li = ev.target.closest("li[data-key]");
-  return li ? li.dataset.key : null;
-}
-
-document.addEventListener("pointerdown", (ev) => {
-  held = keyAt(ev);
-  if (!held) return;
-  // press-hold is a TIMING discrimination and it is timed locally, on purpose: 100-300ms of
-  // jittery link would make a hold read as a tap if the server tried to time it.
-  holdTimer = setTimeout(() => { holdTimer = null; send({t: "gesture", g: "hold", key: held}); },
-                         400);
-});
-document.addEventListener("pointerup", () => {
-  if (holdTimer) {
-    clearTimeout(holdTimer); holdTimer = null;
-    // A release inside the hold window is a tap.  A release AFTER it lands on whatever is under the
-    // finger, which for an open menu is a menu item — that is rule 5's hold-drag-release, and it
-    // needs no verb of its own because menu items are presentations you can tap.
-    if (held) send({t: "gesture", g: "tap", key: held});
-  }
-  held = null;
-});
-document.addEventListener("contextmenu", (ev) => {           // right-click is a hold
-  const k = keyAt(ev);
-  if (k) { ev.preventDefault(); send({t: "gesture", g: "hold", key: k}); }
-});
-window.addEventListener("wheel", (ev) => {                   // wheel is the two-finger pan
-  const dy = ev.deltaY > 0 ? 1 : -1;
-  scroll = Math.max(0, scroll + dy);
-  send({t: "gesture", g: "two-finger", dy: dy});
-}, {passive: true});
+ws.onmessage = (ev) => client.apply(ev.data);
 
 // The test harness drives these; a human uses the mouse.
-window.warp = {
-  tap: (k) => send({t: "gesture", g: "tap", key: k}),
-  hold: (k) => send({t: "gesture", g: "hold", key: k}),
-  cmd: (name, key, confirmed) => send({t: "cmd", name, key, confirmed: !!confirmed}),
-  viewport: (rows, sc) => send({t: "viewport", rows, scroll: sc}),
-  keys: () => [...rowsEl.children].map((li) => li.dataset.key),
-  menu: () => [...menuEl.children].map((li) => li.dataset.key),
-  // the anchor chain as the client believes it, so a test can check the DOM against the WIRE
-  // rather than against the client's own idea of the DOM
-  anchors: () => Object.fromEntries([...nodes].map(([k, r]) => [k, r.after])),
-  parked: () => [...waiting.keys()],
-  stats: () => ({gen, frames, bytes, deltas, nodes: nodes.size, parked: waiting.size})
-};
+window.warp = client;
 </script>

@@ -8,12 +8,20 @@
 ;;;; What it deliberately does not contain is a transport.  A DOM consumer over a WebRTC data
 ;;;; channel and a DOM consumer over a local WebSocket are the same encoding with a different sink,
 ;;;; so the sink is a function slot and the socket lives in warp-dom/serve.
+;;;;
+;;;; channel.lisp is the line between those two statements.  It owns everything a HOST would
+;;;; otherwise have to write around the sink — a clock, one lock over ticks and messages, a send
+;;;; that cannot signal, a close that runs on every path — with the transport still reduced to a
+;;;; function of one string.  It is here rather than in /serve because a WebSocket and an SCTP
+;;;; stream need identically all of it, and because the whole point is that it can be driven by a
+;;;; fake transport in a test rather than by the gateway it is eventually for.
 
 (defpackage #:warp-dom
   (:use #:cl)
   ;; bordeaux-threads arrives with :warp (a projection is shared across consumers that tick on their
   ;; own threads), so the nickname is available even though warp-dom itself does not name it as a
-  ;; dependency.  Only warp-dom/serve — the transport — actually uses it.
+  ;; dependency.  channel.lisp uses it for one optional ticker thread and for the consumer's own
+  ;; lock; warp-dom/serve — the transport — uses it for sockets.
   (:local-nicknames (#:bt #:bordeaux-threads))
   (:import-from #:warp
                 #:consumer #:attach #:detach #:tick #:tick-all #:resync #:pull
@@ -43,6 +51,11 @@
    #:dom-sent-bytes #:dom-last-frame-bytes
    ;; what the browser sends back
    #:on-message #:client-message
+   ;; the channel: a consumer, a clock and a link, where the link is a function of one string
+   #:dom-channel #:open-channel #:channel-receive #:channel-tick #:channel-close
+   #:channel-consumer #:channel-stats #:channel-send #:channel-hz #:channel-name
+   #:channel-frames #:channel-bytes #:channel-received #:channel-send-errors
+   #:channel-last-error #:channel-log
    ;; JSON, because the wire is JSON and the tests read it
    #:to-json #:from-json #:json-get
    ;; re-exported so a caller never needs both packages open

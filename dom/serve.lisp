@@ -1,46 +1,45 @@
 ;;;; dom/serve.lisp — a local WebSocket server, so a real browser can be a warp consumer today.
 ;;;;
 ;;;; ===========================================================================================
-;;;; HOW THIS ATTACHES TO THE REAL CHANNEL, once somebody wants it there
+;;;; THE SWAP THIS HEADER USED TO DESCRIBE HAS HAPPENED — see channel.lisp
 ;;;; ===========================================================================================
 ;;;;
-;;;; The gateway already runs a WebRTC peer connection to the phone with a data channel called
-;;;; `control` carrying the gesture/command traffic beside the video.  A DOM consumer belongs on a
-;;;; second channel beside it — call it `warp` — and the swap is THREE LINES, because the encoding
-;;;; never learned what a socket is:
+;;;; This header said the move onto the gateway's real data channel was three lines, because the
+;;;; encoding never learned what a socket is.  That was right, and it was also not the whole bill.
+;;;; Doing it found four things around those three lines — a clock, one lock over ticks and
+;;;; messages, a send that must not signal, and a close that runs on every unwind path — which are
+;;;; IDENTICAL for a WebSocket and for an SCTP stream and which this file had quietly written out
+;;;; by hand.  They are channel.lisp now, and this file is one of its two callers:
 ;;;;
-;;;;   1. on datachannel open, seat one:
-;;;;          (setf *c* (warp-dom:attach-dom *projection*
-;;;;                                         :view 'monitor-view :rows 14 :budget 4096
-;;;;                                         :invoker (invoker-for-peer peer)
-;;;;                                         :sink (lambda (frame) (dc-send channel frame))))
-;;;;      DOM-SINK is a function of one string.  `dc-send` is whatever the gateway already calls to
-;;;;      put a string on a data channel; nothing in warp-dom knows or cares which it is.
-;;;;   2. on message:   (warp-dom:on-message *c* text)
-;;;;   3. on close:     (warp:detach *c*)
+;;;;   (open-channel projection :send #'put-a-string-somewhere :invoker <the peer's> :budget <bytes>)
+;;;;   (channel-receive ch text)
+;;;;   (channel-close ch)
 ;;;;
-;;;; and the pass loop below (TICK at some Hz) is unchanged.  Two things are worth saying because
-;;;; they are what makes that swap safe rather than merely short:
+;;;; Two things the swap confirmed, both of them predicted here:
 ;;;;
-;;;;   * BUDGET is the one number that must change with the transport, and it changes in the right
-;;;;     direction on its own terms: this file's default is generous because localhost is, and a
-;;;;     cellular data channel would be handed a smaller one.  It is bytes either way, which is the
-;;;;     whole reason DELTA-COST was made generic.
-;;;;   * INVOKER is the peer's, not the server's.  The gateway already knows whether a peer is on
-;;;;     the allowlist or is an enrolled device; that value goes in here and rule 6 does the rest at
-;;;;     invocation.  A browser is not trusted more for having a nicer client.
+;;;;   * BUDGET is the one number that must change with the transport, and it changes on its own
+;;;;     terms: this file's default is generous because localhost is; the data channel is handed a
+;;;;     small one.  It is bytes either way, which is the whole reason DELTA-COST was made generic.
+;;;;   * INVOKER is the peer's, not the server's — and INVOKER-FOR below, which lets a query string
+;;;;     NARROW it, is exactly the thing that does not exist on the other side: there it comes from
+;;;;     the authenticated Nostr identity, and a browser is not trusted more for having a nicer
+;;;;     client.
 ;;;;
-;;;; None of that is exercised here on purpose.  The live gateway is carrying a user's session and
-;;;; is not something to prove a JSON delta against.
+;;;; This file keeps its own accept/read loops rather than being rewritten in terms of the channel,
+;;;; because a listening socket has a shape a data channel does not — a page to serve, an upgrade
+;;;; to negotiate, and a blocking read that IS its clock.  What it no longer has is a second copy
+;;;; of the four disciplines above.
 
 (in-package #:warp-dom)
 
 (defvar *server-stop* nil)
 
-(defun client-page ()
-  (with-open-file (in (asdf:system-relative-pathname "warp-dom" "client.html"))
+(defun client-file (name)
+  (with-open-file (in (asdf:system-relative-pathname "warp-dom" name))
     (let ((s (make-string (file-length in))))
       (subseq s 0 (read-sequence s in)))))
+
+(defun client-page () (client-file "client.html"))
 
 (defstruct (dom-server (:conc-name ds-))
   socket port projection thread (consumers '()) (stop nil) (hz 8)
@@ -90,6 +89,12 @@ Returns a DOM-SERVER; STOP-DOM shuts it down."
              ((and (string= method "GET") (eql 0 (search "/warp" path)))
               (when (ws-accept stream headers)
                 (run-consumer srv stream (invoker-for path (ds-invoker srv)))))
+             ;; client.js is served rather than inlined because it is SHARED: the glass-webrtc
+             ;; phone client loads the same file, and a page that inlined its own copy would be
+             ;; the second client this encoding is not going to have.
+             ((and (string= method "GET") (eql 0 (search "/client.js" path)))
+              (http-respond stream "200 OK" "application/javascript; charset=utf-8"
+                            (client-file "client.js")))
              ((string= method "GET")
               (http-respond stream "200 OK" "text/html; charset=utf-8" (client-page)))
              (t (http-respond stream "405 Method Not Allowed" "text/plain" "no"))))
@@ -107,36 +112,30 @@ and this function does not exist."
   (if (search "as=device" path) :device default))
 
 (defun run-consumer (srv stream &optional (invoker (ds-invoker srv)))
-  "One browser, one consumer.  The socket is the SINK and nothing more: the encoding hands it a
-string and this function puts it on the wire."
+  "One browser, one consumer.  The socket is the SEND and nothing more: the encoding hands the
+channel a string and this lambda puts it on the wire.
+
+The lock is this function's and not the channel's, because it guards THE SOCKET — two threads
+interleaving WebSocket frames on one stream is a framing bug, and only the thing that owns the
+stream knows that.  Everything else about running a consumer on a link is CHANNEL-CLOSE's and
+CHANNEL-RECEIVE's, which is the same code the gateway runs."
   (let* ((lock (bt:make-lock "warp-dom-write"))
-         (c (attach-dom (ds-projection srv)
-                        :view (ds-view srv) :rows (ds-rows srv)
-                        :budget (ds-budget srv) :invoker invoker
-                        :sink (lambda (frame)
-                                (bt:with-lock-held (lock)
-                                  (handler-case (ws-send-text stream frame)
-                                    (error () nil)))))))
+         (ch (open-channel (ds-projection srv)
+                           :send (lambda (frame)
+                                   (bt:with-lock-held (lock) (ws-send-text stream frame)))
+                           :view (ds-view srv) :rows (ds-rows srv)
+                           :budget (ds-budget srv) :invoker invoker :hz (ds-hz srv)
+                           :name (format nil "ws:~a" (ds-port srv))
+                           :log (lambda (m) (format *error-output* "~&[warp-dom] ~a~%" m))))
+         (c (channel-consumer ch)))
     (push c (ds-consumers srv))
-    ;; the pass loop: a tick is a pass, and a pass emits only what the budget affords
-    (let ((ticker (bt:make-thread
-                   (lambda ()
-                     (loop until (or (consumer-stop c) (ds-stop srv)) do
-                       (handler-case (tick c)
-                         (error (e) (format *error-output* "~&[warp-dom] tick: ~a~%" e)))
-                       (sleep (/ 1.0 (ds-hz srv)))))
-                   :name "warp-dom-tick")))
-      (unwind-protect
-           ;; and the read loop: recognized gestures and viewport reports, coming back by KEY
-           (loop
-             (multiple-value-bind (text opcode) (ws-read-message stream)
-               (when (or (null text) (eql opcode 8)) (return))
-               (when (eql opcode 1)
-                 (bt:with-lock-held ((consumer-lock c))
-                   (handler-case (on-message c text)
-                     (error (e) (format *error-output* "~&[warp-dom] message: ~a~%" e)))))))
-        (setf (consumer-stop c) t)
-        (detach c)
-        (setf (ds-consumers srv) (remove c (ds-consumers srv)))
-        (ignore-errors (bt:join-thread ticker :timeout 2))
-        (ws-send-close stream)))))
+    (unwind-protect
+         ;; the read loop: recognized gestures and viewport reports, coming back by KEY.  The pass
+         ;; loop is the channel's own thread, at HZ.
+         (loop
+           (multiple-value-bind (text opcode) (ws-read-message stream)
+             (when (or (null text) (eql opcode 8)) (return))
+             (when (eql opcode 1) (channel-receive ch text))))
+      (channel-close ch)
+      (setf (ds-consumers srv) (remove c (ds-consumers srv)))
+      (ws-send-close stream))))
