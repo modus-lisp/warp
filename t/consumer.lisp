@@ -33,9 +33,12 @@
              (warp::ds-delivered (warp-glass:consumer-stream c)))
     (sort out #'string< :key (lambda (r) (princ-to-string (first r))))))
 
-;;; ---- the projection: one result-set, deliberately deterministic -------------
+;;; ---- the projection: one QUERY, deliberately deterministic -----------------
 ;;; Two lapsed enrolments (so PRESENT is a pure function of the fixture, not of the wall clock)
 ;;; followed by twelve stats.  14 rows x 480x32 = 60 macroblocks each.
+;;;
+;;; ROWS-FN returns DOMAIN OBJECTS.  It does not present them, does not know a viewport exists and
+;;; cannot say where anything is: present, layout and extents are the consumer's (DESIGN.md rule 8).
 
 (defvar *queries* 0)
 (defvar *value* 0)
@@ -47,23 +50,13 @@
                                        :name (format nil "stat~2,'0d" i)
                                        :value (format nil "~d" (if (= i 4) *value* i))
                                        :trend :ok))))
-(defun rows-fn ()
-  (incf *queries*)
-  (let ((tick (warp:now-tick)) (i -1))
-    (mapcar (lambda (o)
-              (incf i)
-              (let ((type (warp-monitor:row-type o)))
-                (warp:make-presentation
-                 :key (warp:presentation-key type o) :type type :object o
-                 :extent (warp:snap-extent 0 (* i 32) 480 32)
-                 :fingerprint (warp:present o type 'warp-monitor::monitor-view)
-                 :as-of tick)))
-            (rows))))
+(defun rows-fn () (incf *queries*) (rows))
 
-(defvar *proj* (warp-glass:make-projection #'rows-fn :view 'warp-monitor::monitor-view))
+(defvar *proj* (warp-glass:make-projection #'rows-fn :type-fn #'warp-monitor:row-type))
 ;; A owns the box and has the desktop's link; B is a guest on a phone, at a fifth of the budget.
-(defvar *a* (warp-glass:attach *proj* :fb (fb) :budget 100000 :invoker :allowlist))
-(defvar *b* (warp-glass:attach *proj* :fb (fb) :budget 120     :invoker :device))
+(defvar *view* 'warp-monitor::monitor-view)
+(defvar *a* (warp-glass:attach *proj* :fb (fb) :view *view* :budget 100000 :invoker :allowlist))
+(defvar *b* (warp-glass:attach *proj* :fb (fb) :view *view* :budget 120     :invoker :device))
 
 (format t "~&== one projection, N seats, ONE query per round ==~%")
 (let ((q0 *queries*))
@@ -74,7 +67,7 @@
   (dotimes (i 5) (warp-glass:tick-all *proj*))
   (ok "five rounds of two seats = five queries, not ten" (= 5 (- *queries* q0))))
 (let* ((solo (warp-glass:make-surface :fb (fb) :view 'warp-monitor::monitor-view
-                                      :rows-fn #'rows-fn))
+                                      :rows-fn #'rows-fn :type-fn #'warp-monitor:row-type))
        (q0 *queries*))
   (dotimes (i 5) (warp-glass:tick solo))
   (ok "a lone consumer still queries once per tick — the same path, not an equivalent one"
@@ -116,7 +109,7 @@
                                         (= (digest *a*) (digest *b*))))
 
 (format t "~&== a late joiner starts empty and gets a snapshot; nobody else is told anything ==~%")
-(defvar *c* (warp-glass:attach *proj* :fb (fb) :budget 240 :invoker :device))
+(defvar *c* (warp-glass:attach *proj* :fb (fb) :view *view* :budget 240 :invoker :device))
 (ok "its memory starts empty, not at somebody else's high-water mark"
     (null (memory *c*)))
 (let ((ea (warp-glass:consumer-emitted *a*)) (eb (warp-glass:consumer-emitted *b*))
@@ -167,8 +160,8 @@
            (equal (warp:present (warp:p-object (warp:delta-presentation (first da)))
                                 'warp-monitor::stat 'warp-monitor::monitor-view)
                   (warp:p-fingerprint (warp:delta-presentation (first da)))))))
-(ok "the projection's own row is untouched — copy-on-write, so the shared half stays shared"
-    (every (lambda (p) (null (warp:p-state p))) (warp-glass:projection-rows *proj*)))
+(ok "the projection holds OBJECTS, so there is no shared row for a selection to touch"
+    (notany (lambda (o) (typep o 'warp:presentation)) (warp-glass:projection-objects *proj*)))
 (ok "the seats now legitimately DIFFER, and only in their selections"
     (let ((ma (memory *a*)) (mb (memory *b*)))
       (= 2 (length (set-difference ma mb :test #'equal)))))
@@ -212,5 +205,91 @@
     (eq :revoked (first (warp-glass:consumer-last-result *a*))))
 (ok "the refusal did not leak into the other seat's state"
     (null (warp-glass:consumer-last-result *c*)))
+
+;;; ---- the case the fused boundary could not express at all -------------------
+;;; ROWS-FN used to return LAID-OUT presentations, so a scroll offset and a window size were
+;;; properties of the RESULT-SET and two seats necessarily shared both.  Now the projection returns
+;;; objects and each seat lays them out for itself.  One projection, one query, two slices.
+
+(format t "~&== two seats, ONE query, their OWN scroll offsets and OWN window sizes ==~%")
+(defun keys-of (ds) (sort (mapcar #'warp:delta-key ds) #'string<))
+(defun at-y (c y)
+  "The key of the row this seat has on screen at Y — its own screen, its own offset."
+  (let ((p (find y (warp-glass:consumer-visible c) :key (lambda (p) (warp::extent-y (warp:p-extent p))))))
+    (and p (warp:p-key p))))
+
+;; D: a 160px window (five rows) at the top.  E: a 96px window (three rows), nine rows down.
+(defvar *d* (warp-glass:attach *proj* :fb (glass:make-framebuffer 480 160 warp-glass:+bg+)
+                               :view *view* :budget 100000))
+(defvar *e* (warp-glass:attach *proj* :fb (glass:make-framebuffer 480 96 warp-glass:+bg+)
+                               :view *view* :budget 100000 :scroll-y 288))
+(let ((q0 *queries*))
+  (let ((dd (warp-glass:tick *d*)) (de (warp-glass:tick *e*)))
+    (ok "both seats filled from the CACHED epoch: joining ran no query at all"
+        (= 0 (- *queries* q0)))
+    (let ((q1 *queries*))
+      (warp-glass:tick *d*) (warp-glass:tick *e*)
+      (ok "and their next round costs ONE query between them, whatever their offsets"
+          (= 1 (- *queries* q1))))
+    (format t "     D: ~{~a~^ ~}~%     E: ~{~a~^ ~}~%" (keys-of dd) (keys-of de))
+    (ok "D is told the first five rows — its 160px viewport at scroll 0"
+        (equal '("aa11bb22cc33" "dd33ee44ff55" "stat00" "stat01" "stat02") (keys-of dd)))
+    (ok "E is told three rows nine down — its 96px viewport at scroll 288"
+        (equal '("stat07" "stat08" "stat09") (keys-of de)))
+    (ok "the two working sets are DISJOINT, over one query of one result-set"
+        (null (intersection (keys-of dd) (keys-of de) :test #'string=)))
+    (ok "the same screen position shows each seat a different row"
+        (and (string= "aa11bb22cc33" (at-y *d* 0)) (string= "stat07" (at-y *e* 0))))
+    (ok "and each seat's extents stay inside its OWN viewport"
+        (and (every (lambda (d) (<= (+ (warp::extent-y (warp:delta-extent d))
+                                       (warp::extent-h (warp:delta-extent d))) 160)) dd)
+             (every (lambda (d) (<= (+ (warp::extent-y (warp:delta-extent d))
+                                       (warp::extent-h (warp:delta-extent d))) 96)) de)))))
+(ok "the shared projection carries NO extents at all — it holds domain objects"
+    (let ((os (warp-glass:projection-objects *proj*)))
+      (and (= 14 (length os))
+           (notany (lambda (o) (typep o 'warp:presentation)) os)
+           (every (lambda (o) (or (typep o 'warp-monitor::stat)
+                                  (typep o 'warp-monitor::enrolment)))
+                  os))))
+(ok "and neither seat's own rows are the projection's"
+    (notany (lambda (p) (member p (warp-glass:projection-objects *proj*)))
+            (warp-glass:consumer-visible *d*)))
+
+(format t "~&== scrolling one seat does not move the other ==~%")
+(warp-glass:scroll-by *d* 64)                       ; two rows down
+(let ((dd (warp-glass:tick *d*)) (de (warp-glass:tick *e*)))
+  (ok "the scrolled seat: two rows leave, two arrive, three merely MOVED (rule 2)"
+      (and (= 2 (count :gone (kinds dd))) (= 2 (count :appeared (kinds dd)))
+           (= 3 (count :moved (kinds dd))) (zerop (count :changed (kinds dd)))))
+  (ok "every :moved carries the same translation, one viewport's worth of scroll"
+      (every (lambda (d) (or (not (eq :moved (warp:delta-kind d)))
+                             (and (zerop (warp:delta-dx d)) (= -64 (warp:delta-dy d)))))
+             dd))
+  (ok "the other seat is told NOTHING — it did not scroll" (null de))
+  (ok "and its slice is unmoved" (string= "stat07" (at-y *e* 0))))
+(ok "scroll clamps to this seat's own content and viewport, not to anyone else's"
+    (progn (warp-glass:scroll-by *d* 100000)
+           (= (warp-glass:consumer-scroll-y *d*) (- (* 14 32) 160))))
+
+(format t "~&== a second VIEW is no longer a second projection ==~%")
+;; While layout was fused the shared rows' fingerprints were derived under the projection's view, so
+;; a seat holding another view could not diff them at all.  Layout moved; the restriction lifts.
+(defvar *f* (warp-glass:attach *proj* :fb (glass:make-framebuffer 480 160 warp-glass:+bg+)
+                               :view 'plain-view :budget 100000))
+(let ((q0 *queries*))
+  (let* ((df (warp-glass:tick *f*)) (dd (warp-glass:tick *d*)))
+    (declare (ignorable dd))
+    (ok "one query still serves both views" (= 1 (- *queries* q0)))
+    (ok "the seat with no designed view gets the MOP slot walk, over the same objects"
+        (let ((p (first df)))
+          (and p (equal (warp:p-fingerprint (warp:delta-presentation p))
+                        (warp:present (warp:p-object (warp:delta-presentation p))
+                                      (warp:p-type (warp:delta-presentation p)) 'plain-view)))))
+    (ok "and it is a DIFFERENT fingerprint from the designed view's, for the same row"
+        (let* ((pf (find "stat00" df :key #'warp:delta-key :test #'string=))
+               (obj (and pf (warp:p-object (warp:delta-presentation pf)))))
+          (and obj (not (equal (warp:present obj 'warp-monitor::stat 'plain-view)
+                               (warp:present obj 'warp-monitor::stat *view*))))))))
 
 (format t "~&~:[~a TEST(S) FAILED~;ALL TESTS PASSED~]~%" (zerop *fails*) *fails*)

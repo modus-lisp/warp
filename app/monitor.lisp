@@ -168,15 +168,13 @@ implementation — no IPC, and the gateway still enforces its own authorization 
 (defun row-type (o) (if (typep o 'stat) 'stat 'enrolment))
 
 (defun monitor-presentations (&key (scroll 0) (width 480) (viewport-h 384) (row-h 32))
-  "Lay the result-set out.  Mixed types in one list, each keyed and projected by its own type."
-  (let ((tick (now-tick)) (out '()) (i 0))
-    (dolist (o (monitor-rows :tick tick) (nreverse out))
-      (let* ((type (row-type o))
-             (top (- (* i row-h) scroll)))
-        (incf i)
-        (when (and (> (+ top row-h) 0) (< top viewport-h))
-          (push (make-presentation :key (presentation-key type o) :type type :object o
-                                   :extent (snap-extent 0 top width row-h)
-                                   :fingerprint (present o type 'monitor-view)
-                                   :as-of tick)
-                out))))))
+  "Query and lay out in one call — the fused shape, kept for the headless cost harness, which has no
+consumer to lay out for.  A SEAT does not use this: it pulls MONITOR-ROWS from the shared projection
+and lays them out itself, at its own scroll offset and its own window size (DESIGN.md rule 8).
+
+Mixed types in one list, each keyed and projected by its own type: LAYOUT-LIST takes ROW-TYPE as its
+type argument and asks it per object."
+  (let ((tick (now-tick)))
+    (layout-list (monitor-rows :tick tick) #'row-type 'monitor-view
+                 :width width :viewport-h viewport-h :row-height row-h :scroll-y scroll
+                 :as-of tick)))

@@ -37,22 +37,34 @@ exactly the trade named in DESIGN.md.  Specialize to design."
 ;;; Only VISIBLE rows become presentations.  That is not an optimization — it is the working set.  A
 ;;; view subscribes to a slice, and the slice is what the consumer is told about.
 
+(defun row-type-of (type object)
+  "TYPE may be a presentation type, or a FUNCTION from object to presentation type.  A result-set is
+allowed to be heterogeneous — the monitor's is, stats followed by enrolments — and each row is keyed
+and projected by its own type.  A symbol is never called: presentation types ARE symbols, so only a
+function can mean 'ask'."
+  (if (functionp type) (funcall type object) type))
+
 (defun layout-list (objects type view
                     &key (x 0) (y 0) (width 640) (row-height 32) (scroll-y 0) (viewport-h 480)
                          (as-of nil))
   "Lay OBJECTS out as a vertical list and return the presentations for the rows that are VISIBLE
 given SCROLL-Y and VIEWPORT-H.  Extents are grid-snapped in framebuffer space (rule 3), and each
-row's fingerprint is its projected content, so a row that renders the same emits nothing."
+row's fingerprint is its projected content, so a row that renders the same emits nothing.
+
+This is the CONSUMER's work, not the projection's (DESIGN.md rule 8): SCROLL-Y, VIEWPORT-H and VIEW
+are all properties of the one looking.  Two consumers over one result-set call this twice, with
+their own numbers, and get their own extents."
   (let ((rh (snap row-height :up t))               ; rows are a whole number of macroblocks
         (out '()))
     (loop for o in objects
           for i from 0
           for top = (- (+ y (* i rh)) scroll-y)
           when (and (> (+ top rh) y) (< top (+ y viewport-h)))    ; intersects the viewport
-            do (let ((content (present o type view)))
+            do (let* ((ty (row-type-of type o))
+                      (content (present o ty view)))
                  (push (make-presentation
-                        :key (presentation-key type o)
-                        :type type
+                        :key (presentation-key ty o)
+                        :type ty
                         :object o
                         :extent (snap-extent x top width rh)
                         :fingerprint content

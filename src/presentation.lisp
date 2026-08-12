@@ -38,20 +38,25 @@
   extent                  ; (x y w h), framebuffer space, grid-snapped
   (as-of nil)             ; when the underlying data was read; makes stale delivery honest
   (fingerprint nil)       ; EQUAL-compared summary of what the appearance depends on
-  (state nil)             ; per-CONSUMER view state (see below); EQUAL-compared like FINGERPRINT
+  (state nil)             ; this consumer's view state (see below); EQUAL-compared like FINGERPRINT
   (cost nil)              ; optional override; defaults to the extent's macroblock count
   (children '()))
 
-;;; STATE is rules 7 and 8 meeting in one slot.  FINGERPRINT is what the PROJECTION derived the
-;;; appearance from — object, type, view — and it is shared by every consumer looking at this row.
-;;; STATE is what THIS consumer's view state adds to it: selected, expanded.  Two people looking at
-;;; one list have one list and two selections, so the two cannot live in the same slot; but they are
-;;; compared identically, because from the reconciler's side "selection moved" and "the value
-;;; changed" are the same event — this row no longer looks the way you were told it looks.
+;;; STATE is rules 7 and 8 meeting in one slot.  FINGERPRINT is PRESENT's output — what the view
+;;; derived the appearance from.  STATE is what this consumer's view state adds to it: selected,
+;;; expanded.  They are compared identically, because from the reconciler's side "selection moved"
+;;; and "the value changed" are the same event — this row no longer looks the way you were told it
+;;; looks.
 ;;;
-;;; It is a plist, and NIL is the overwhelmingly common value: a consumer annotates the row it has
-;;; selected and shares the projection's own presentation, untouched, for every other row.  That is
-;;; the copy-on-write default, and it is what keeps the shared half genuinely shared.
+;;; The slot originally existed because presentations themselves were shared between consumers and
+;;; a selection could not be written into a shared row.  Nothing is shared at this level any more —
+;;; each consumer lays out its own presentations over shared OBJECTS — so it would now be possible
+;;; to fold selection into the fingerprint.  It is kept separate anyway, for a reason that outlives
+;;; the one it was introduced for: FINGERPRINT is PRESENT's output and PRESENT's signature is
+;;; (object type view), with no room for a seat's state; and an encoding needs the two apart —
+;;; a macroblock consumer tints a row, a token consumer would say "(selected)", and neither can
+;;; recover which half was which from a merged blob.  What did go away is the copy-on-write
+;;; machinery around it: the consumer builds these presentations, so it just annotates its own.
 
 (defun p-macroblocks (p)
   "How many 16px macroblocks this presentation's extent covers — the natural cost unit, since the

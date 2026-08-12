@@ -12,8 +12,9 @@
   (warp-glass:run :port (or (ignore-errors (parse-integer (second sb-ext:*posix-argv*))) 5910)
                   :width 480 :height 448 :name "warp :: glass monitor"
                   :view 'warp-monitor::monitor-view
-                  :rows-fn (lambda () (warp-monitor:monitor-presentations
-                                       :width 480 :viewport-h 448))
+                  ;; the projection is the QUERY; this seat lays it out to its own 480x448 window
+                  :rows-fn #'warp-monitor:monitor-rows
+                  :type-fn #'warp-monitor:row-type
                   :hz 4))
 (format t "~&warp monitor serving on RFB ~a~%" (warp-glass::sf-port *sf*))
 (finish-output)

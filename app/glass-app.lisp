@@ -69,15 +69,16 @@
 (defun monitor-surface (fb)
   "glass's :surface contract — (values ON-KEY ON-POINTER DIRTY-P) for a framebuffer the WM owns.
 
-The rows are laid out to the framebuffer's ACTUAL size rather than a fixed one, so the window can be
-resized by the WM and the result-set follows.  That is the whole reason layout takes a viewport: a
-view subscribes to a slice, and the slice is a property of the window, not of the data."
+The projection is the QUERY — MONITOR-ROWS, which returns domain objects and knows nothing about
+windows.  The consumer lays them out to its own framebuffer's ACTUAL size, so the window can be
+resized by the WM and the slice follows, and a second window over the same projection follows its
+own.  That is the whole reason layout is the consumer's: a view subscribes to a result-set, and the
+slice is a property of the seat, not of the data."
   (warp-glass:make-surface-app
    fb
    :view 'monitor-view
-   :rows-fn (lambda ()
-              (monitor-presentations :width (glass:fb-width fb)
-                                     :viewport-h (glass:fb-height fb)))
+   :rows-fn #'monitor-rows
+   :type-fn #'row-type
    ;; The desktop shares one VP8 budget across every window, so a monitor that repaints its whole
    ;; view in one pass would starve the others.  400 macroblocks is roughly a third of this window
    ;; and leaves the rest to whatever else is on screen; the reconciler defers the remainder and

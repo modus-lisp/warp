@@ -86,8 +86,19 @@ the glyph, owns the space."
 ;;; DESIGN.md rule 8.  One field of the old SURFACE was the thing being looked at; every other one
 ;;; was a property of the one looking, and with a single consumer nothing forced the distinction.
 ;;;
-;;;   PROJECTION   the result-set being looked at.  Computed ONCE per tick and fanned out.
-;;;   CONSUMER     one seat: its own stream, budget, framebuffer, view state, invoker, counters.
+;;;   PROJECTION   the QUERY, and the domain objects it returns.  Pulled once per epoch, shared.
+;;;   CONSUMER     one seat: present, layout, diff, encode — and therefore view, scroll, viewport,
+;;;                extents, stream, budget, framebuffer, view state, invoker, counters.
+;;;
+;;; The boundary sits BELOW layout, and that is the second half of rule 8.  ROWS-FN used to return
+;;; laid-out presentations, which meant sharing a projection necessarily shared scroll AND window
+;;; size — a fusion that contradicted "views subscribe to result-sets" and present.lisp's own header.
+;;; The forcing argument is the one that motivates the whole rule: ENCODINGS PER CONSUMER.  A DOM
+;;; consumer lays out in a browser with its own viewport; a token consumer has no extents at all.
+;;; Neither can share a macroblock consumer's laid-out rows, so per-consumer layout is not a
+;;; refinement of "encodings per consumer" — it is what that phrase MEANS once there is a second
+;;; encoding.  LAY-OUT and APPLY-DELTAS are therefore generic on the consumer: a new encoding is a
+;;; subclass with two methods, not a second architecture.
 ;;;
 ;;; The efficiency argument (N consumers should not run N copies of one query) is the weak one.  The
 ;;; correctness argument is that STREAM is the consumer's MEMORY of what it has already been told.
@@ -99,22 +110,32 @@ the glyph, owns the space."
 
 (defclass projection ()
   ((rows-fn :initarg :rows-fn :accessor projection-rows-fn
-            :documentation "() -> the current result-set, as presentations.")
-   (view :initarg :view :initform nil :accessor projection-view
-         :documentation "PRESENT dispatches on it, so the fingerprints were derived under it; a
-consumer cannot hold a different one and still diff against these rows.  A second view is a second
-projection.")
-   (rows :initform '() :accessor projection-rows :documentation "The cached result-set.")
+            :documentation "() -> the current result-set, as DOMAIN OBJECTS.  Not presentations:
+present, layout and extents are the consumer's.")
+   (type-fn :initarg :type-fn :accessor projection-type-fn
+            :initform (lambda (o) (class-name (class-of o)))
+            :documentation "object -> presentation type.  What a row IS belongs to the result-set,
+not to the seat: a DOM consumer and a token consumer must agree that a row is a STAT even though
+they agree on nothing about how it looks.  The default is the object's class name, which is the same
+zero-UI-code default PRESENT itself has.")
+   (objects :initform '() :accessor projection-objects
+            :documentation "The cached result-set — objects, carrying no extents at all.")
+   (as-of :initform nil :accessor projection-as-of
+          :documentation "When the cached result-set was READ.  Staleness is a property of the read,
+so it is stamped here once and copied onto each presentation at layout time; a consumer laying out
+an epoch-old cache reports the age of the DATA, not of its own pass.")
    (epoch :initform 0 :accessor projection-epoch)
    (queries :initform 0 :accessor projection-queries
             :documentation "How many times ROWS-FN has actually run.  The measurement rule 8 is
 about: with N consumers ticking in a round, this advances once.")
    (consumers :initform '() :accessor projection-consumers)
    (lock :initform (bt:make-lock "warp-projection") :reader projection-lock))
-  (:documentation "The shared half: the result-set being looked at."))
+  (:documentation "The shared half: the query, and the objects it returns."))
 
-(defun make-projection (rows-fn &key view)
-  (make-instance 'projection :rows-fn rows-fn :view view))
+(defun make-projection (rows-fn &key (type-fn nil type-fn-p))
+  (if type-fn-p
+      (make-instance 'projection :rows-fn rows-fn :type-fn type-fn)
+      (make-instance 'projection :rows-fn rows-fn)))
 
 (defclass consumer ()
   ((projection :initarg :projection :accessor consumer-projection :accessor sf-projection)
@@ -122,6 +143,14 @@ about: with N consumers ticking in a round, this advances once.")
    (fb :initarg :fb :initform nil :accessor consumer-fb :accessor sf-fb)
    (port :initarg :port :initform nil :accessor consumer-port :accessor sf-port)
    (name :initarg :name :initform nil :accessor consumer-name :accessor sf-name)
+   ;; how THIS consumer sees: present dispatches on VIEW, and layout is its own
+   (view :initarg :view :initform nil :accessor consumer-view :accessor sf-view
+         :documentation "PRESENT dispatches on it.  It lives here, not on the projection, because
+the fingerprints are this consumer's own — derived under its view, at its scroll, in its viewport.")
+   (scroll-y :initarg :scroll-y :initform 0 :accessor consumer-scroll-y :accessor sf-scroll-y)
+   (width :initarg :width :initform nil :accessor consumer-width)
+   (viewport-h :initarg :viewport-h :initform nil :accessor consumer-viewport-h)
+   (row-height :initarg :row-height :initform 32 :accessor consumer-row-height)
    ;; what this consumer has been told, and what its link can carry
    (stream :initform (warp:make-delta-stream) :accessor consumer-stream :accessor sf-stream)
    (budget :initarg :budget :initform 400 :accessor consumer-budget :accessor sf-budget)
@@ -133,7 +162,7 @@ about: with N consumers ticking in a round, this advances once.")
    (selected :initform nil :accessor consumer-selected :accessor sf-selected)
    (menu :initform nil :accessor consumer-menu :accessor sf-menu)
    (visible :initform '() :accessor consumer-visible :accessor sf-visible
-            :documentation "The set this consumer was last shown — shared rows plus its own menu —
+            :documentation "The set this consumer was last shown — its own rows plus its own menu —
 kept for hit-testing.")
    (last-result :initform nil :accessor consumer-last-result :accessor sf-last-result)
    ;; this consumer's numbers, not the projection's
@@ -146,21 +175,33 @@ kept for hit-testing.")
   (:documentation "One seat: a glass seat and a warp consumer are the same object."))
 
 ;;; The SF- accessors are the compatibility surface, so every existing call site keeps working and
-;;; the single-consumer path is the same code path rather than an equivalent one.  VIEW and ROWS-FN
-;;; now live on the projection, so those two delegate.
+;;; the single-consumer path is the same code path rather than an equivalent one.  ROWS-FN is the
+;;; projection's; everything else is the seat's.
 
 (deftype surface () 'consumer)
-(defun consumer-view (c) (projection-view (consumer-projection c)))
 (defun consumer-rows-fn (c) (projection-rows-fn (consumer-projection c)))
-(defun sf-view (c) (consumer-view c))
 (defun sf-rows-fn (c) (consumer-rows-fn c))
 
-(defun attach (projection &key fb (budget 400) (invoker :allowlist) name port)
+(defun viewport-width (c)
+  "The width this consumer lays out into — its own, defaulting to its framebuffer's."
+  (or (consumer-width c) (and (consumer-fb c) (glass:fb-width (consumer-fb c))) 640))
+
+(defun viewport-height (c)
+  (or (consumer-viewport-h c) (and (consumer-fb c) (glass:fb-height (consumer-fb c))) 480))
+
+(defun attach (projection &key fb view (budget 400) (invoker :allowlist) name port
+                               (scroll-y 0) width viewport-h (row-height 32))
   "Seat a consumer at PROJECTION.  Its stream starts EMPTY — it cannot inherit anyone else's
 high-water mark, which is the late-joiner bug — so its first pass announces the whole working set,
-chunked and budgeted by exactly the path every other pass uses."
-  (let ((c (make-instance 'consumer :projection projection :fb fb :budget budget
-                                    :invoker invoker :name name :port port)))
+chunked and budgeted by exactly the path every other pass uses.
+
+VIEW, SCROLL-Y and the viewport are arguments HERE and not on the projection: two seats at one
+result-set may look at it through different views, at different offsets, in different-sized windows,
+and none of that is a property of the data."
+  (let ((c (make-instance 'consumer :projection projection :fb fb :budget budget :view view
+                                    :invoker invoker :name name :port port
+                                    :scroll-y scroll-y :width width :viewport-h viewport-h
+                                    :row-height row-height)))
     (bt:with-lock-held ((projection-lock projection))
       (setf (projection-consumers projection)
             (append (projection-consumers projection) (list c))))
@@ -174,7 +215,8 @@ chunked and budgeted by exactly the path every other pass uses."
     c))
 
 (defun pull (projection consumer)
-  "The shared result-set, at an epoch CONSUMER has not been handed yet.
+  "The shared result-set — objects, and the AS-OF of the read that produced them — at an epoch
+CONSUMER has not been handed yet.
 
 The query runs only when the caller needs a newer epoch than the one it already holds.  One consumer
 therefore queries once per tick — the behaviour before rule 8, unchanged — and N consumers ticking in
@@ -187,29 +229,61 @@ and not a destructive one.  Two clocks pulling one mixer source take alternate f
 listeners hear half of it; that is the same hazard, and it is the one rule 8 exists to prevent."
   (bt:with-lock-held ((projection-lock projection))
     (when (eql (consumer-epoch consumer) (projection-epoch projection))
-      (setf (projection-rows projection) (funcall (projection-rows-fn projection)))
+      (setf (projection-objects projection) (funcall (projection-rows-fn projection))
+            ;; AS-OF is a property of the READ, stamped once here.  Quantized like every other clock
+            ;; the protocol reads (rule: time is an input to queries, and it ticks).
+            (projection-as-of projection) (warp:now-tick))
       (incf (projection-epoch projection))
       (incf (projection-queries projection)))
     (setf (consumer-epoch consumer) (projection-epoch projection))
-    (projection-rows projection)))
+    (values (projection-objects projection) (projection-as-of projection))))
 
-;;; ---- view state annotates the shared row, copy-on-write ---------------------
+;;; ---- layout is the consumer's ----------------------------------------------
+;;; The second half of rule 8.  PRESENT and LAYOUT run per consumer, over shared objects, so scroll
+;;; offset, viewport size and view are this seat's and nobody else's.  It is also the extension
+;;; point for a second encoding: a DOM consumer specialises LAY-OUT to produce extent-less
+;;; presentations the browser will place, a token consumer to produce presentations with no extents
+;;; at all (the reconciler already tolerates a NIL extent — it costs one unit and can never be a
+;;; :moved), and both keep every other line of the protocol.
 
-(defun view-state (c p)
-  "What this consumer's view state adds to the shared presentation P — NIL when it has nothing to
-say, which is every row but one."
-  (let ((sel (consumer-selected c)))
-    (when (and sel (equal sel (warp:p-key p))) (list :selected t))))
+(defgeneric lay-out (consumer objects as-of)
+  (:documentation "Project OBJECTS for CONSUMER and give the visible ones extents.  Returns this
+consumer's presentations, stamped with the AS-OF of the read they came from."))
 
-(defun consumer-presentation (c p)
-  "The shared presentation as THIS consumer holds it.  Untouched unless its view state annotates it,
-so the projection's work stays genuinely shared and only the selected row is ever copied."
-  (let ((st (view-state c p)))
-    (if (null st)
-        p
-        (let ((q (warp:copy-presentation p)))
-          (setf (warp:p-state q) st)
-          q))))
+(defmethod lay-out ((c consumer) objects as-of)
+  "The macroblock encoding's layout: a vertical list, clipped to this consumer's own viewport at its
+own scroll offset, grid-snapped (rule 3).
+
+This is also where rule 7's view state lands.  The consumer BUILT these presentations, so it simply
+annotates its own selected row — there is nothing shared left to copy on write.  P-STATE stays a
+separate slot from FINGERPRINT because they are different kinds of thing and an encoding needs to
+tell them apart: the fingerprint is PRESENT's output, and P-STATE is what this seat adds to it."
+  (let ((ps (warp:layout-list objects (projection-type-fn (consumer-projection c)) (consumer-view c)
+                              :width (viewport-width c)
+                              :viewport-h (viewport-height c)
+                              :row-height (consumer-row-height c)
+                              :scroll-y (consumer-scroll-y c)
+                              :as-of as-of))
+        (sel (consumer-selected c)))
+    (when sel
+      (dolist (p ps)
+        (when (equal sel (warp:p-key p)) (setf (warp:p-state p) (list :selected t)))))
+    ps))
+
+;;; ---- scroll is per consumer, which is the point ----------------------------
+
+(defun content-height (c)
+  (warp:list-content-height (projection-objects (consumer-projection c))
+                            :row-height (consumer-row-height c)))
+
+(defun scroll-to (c y)
+  "Set this consumer's scroll offset, clamped to its own content and its own viewport.  Its
+neighbours over the same projection are not moved: that is the capability the fused boundary could
+not express."
+  (setf (consumer-scroll-y c)
+        (max 0 (min y (max 0 (- (content-height c) (viewport-height c)))))))
+
+(defun scroll-by (c dy) (scroll-to c (+ (consumer-scroll-y c) dy)))
 
 ;;; ---- menus are presentations too --------------------------------------------
 ;;; Rule 7 says view state is presentations, keyed like everything else.  A menu is exactly that: a
@@ -289,8 +363,12 @@ so the projection's work stays genuinely shared and only the selected row is eve
                     (<= (warp::extent-y e) y (+ (warp::extent-y e) (warp::extent-h e) -1)))))
            (reverse (consumer-visible c))))
 
-(defun apply-deltas (c deltas)
-  "Paint exactly what the stream emitted, and nothing else."
+(defgeneric apply-deltas (consumer deltas)
+  (:documentation "Land DELTAS in whatever this consumer's encoding is.  Macroblocks for a retina,
+DOM for a browser, tokens for a model — the delta stream above it does not change."))
+
+(defmethod apply-deltas ((c consumer) deltas)
+  "The framebuffer encoding: paint exactly what the stream emitted, and nothing else."
   (let ((fb (consumer-fb c)) (view (consumer-view c)))
     (glass:with-fb-locked (fb)
       (dolist (d deltas)
@@ -313,24 +391,27 @@ so the projection's work stays genuinely shared and only the selected row is eve
            (incf (consumer-painted c))))))))
 
 (defun %pass (c emitter)
-  "One pass for one consumer: take the shared result-set, annotate it with this consumer's view
-state, add this consumer's menu, advance this consumer's stream under this consumer's budget, and
-paint only what that emitted.  EMITTER is WARP:EMIT or, for a resync, WARP:SNAPSHOT — the two differ
-only in whether the delivered state is forgotten first and the generation bumped, which is why a
-resync needs no path of its own."
-  (let* ((shared (pull (consumer-projection c) c))
-         (rows (append (if (consumer-selected c)
-                           (mapcar (lambda (p) (consumer-presentation c p)) shared)
-                           shared)
-                       (menu-presentations c))))
-    (multiple-value-bind (deltas deferred)
-        (funcall emitter (consumer-stream c) rows :budget (consumer-budget c))
-      (incf (consumer-passes c))
-      (incf (consumer-emitted c) (length deltas))
-      (setf (consumer-deferred c) deferred
-            (consumer-visible c) rows)
-      (when deltas (apply-deltas c deltas))
-      deltas)))
+  "One pass for one consumer: take the shared OBJECTS, lay them out for this consumer (its view, its
+scroll, its viewport, its selection), add this consumer's menu, advance this consumer's stream under
+this consumer's budget, and land only what that emitted.  EMITTER is WARP:EMIT or, for a resync,
+WARP:SNAPSHOT — the two differ only in whether the delivered state is forgotten first and the
+generation bumped, which is why a resync needs no path of its own.
+
+The layout is re-derived every pass rather than cached.  A cache could only ever hit when the query
+did NOT re-run, and PULL re-runs it whenever this consumer needs a newer epoch — which is every
+tick — so it would buy nothing and cost the one thing that must not be lost: an object MUTATED IN
+PLACE keeps its key and its identity, and it is re-presenting it that turns the mutation into a
+changed fingerprint and therefore a :changed delta."
+  (multiple-value-bind (objects as-of) (pull (consumer-projection c) c)
+    (let ((rows (append (lay-out c objects as-of) (menu-presentations c))))
+      (multiple-value-bind (deltas deferred)
+          (funcall emitter (consumer-stream c) rows :budget (consumer-budget c))
+        (incf (consumer-passes c))
+        (incf (consumer-emitted c) (length deltas))
+        (setf (consumer-deferred c) deferred
+              (consumer-visible c) rows)
+        (when deltas (apply-deltas c deltas))
+        deltas))))
 
 (defun tick (c)
   "One pass: take the current result-set, emit what is owed under budget, paint only that."
@@ -347,9 +428,14 @@ this consumer's memory is affected; its neighbours are not told anything."
   (mapcar #'tick (projection-consumers projection)))
 
 (defun on-pointer (c mask x y)
-  "Interim gesture mapping (see the file header): button 1 = tap, button 3 = hold.
-Everything this touches — the menu, the selection, the invoker the gesture is resolved against — is
-this consumer's.  Another seat over the same projection is not disturbed by any of it."
+  "Interim gesture mapping (see the file header): button 1 = tap, button 3 = hold, wheel = the
+two-finger pan of rule 5 arriving in the client's lossy encoding.
+Everything this touches — the scroll offset, the menu, the selection, the invoker the gesture is
+resolved against — is this consumer's.  Another seat over the same projection is not disturbed by
+any of it, which is what the fused boundary could not do: scrolling one seat moved both."
+  (when (or (logtest mask 8) (logtest mask 16))                ; buttons 4/5: wheel up/down
+    (scroll-by c (if (logtest mask 8) (- (consumer-row-height c)) (consumer-row-height c)))
+    (return-from on-pointer t))
   (let* ((gesture (cond ((logtest mask 1) :tap) ((logtest mask 4) :hold) (t nil)))
          (p (and gesture (hit c x y))))
     (when gesture
@@ -399,13 +485,16 @@ here, and rule 6 is unchanged: this is the enforcement point, the menu was court
       (finish-output *error-output*)
       nil)))
 
-(defun make-surface (&key fb port name view rows-fn (budget 400) (invoker :allowlist))
+(defun make-surface (&key fb port name view rows-fn (type-fn nil type-fn-p) (budget 400)
+                          (invoker :allowlist) (scroll-y 0) width viewport-h (row-height 32))
   "One consumer over a projection of its own — the single-seat case.  Two windows over ONE
 projection is ATTACH on a projection you already have."
-  (attach (make-projection rows-fn :view view)
-          :fb fb :port port :name name :budget budget :invoker invoker))
+  (attach (if type-fn-p (make-projection rows-fn :type-fn type-fn) (make-projection rows-fn))
+          :fb fb :port port :name name :view view :budget budget :invoker invoker
+          :scroll-y scroll-y :width width :viewport-h viewport-h :row-height row-height))
 
-(defun make-surface-app (fb &key view rows-fn (budget 400) (invoker :allowlist) projection)
+(defun make-surface-app (fb &key view rows-fn (type-fn nil type-fn-p) (budget 400)
+                              (invoker :allowlist) projection)
   "The WM surface contract: given a framebuffer, return (values ON-KEY ON-POINTER DIRTY-P CONSUMER).
 DIRTY-P is a warp pass — take the current result-set, emit what is owed, paint only that, and report
 whether anything changed.  This is how warp becomes a window in the glass desktop rather than a
@@ -414,11 +503,16 @@ presentations.
 
 Pass PROJECTION to seat this window at a result-set that is already being looked at.  The WM polls
 each window's DIRTY-P independently and in no particular order, which is exactly the fan-out rule 8
-describes: the query runs for whichever window needs a fresher epoch, and the others read the cache."
+describes: the query runs for whichever window needs a fresher epoch, and the others read the cache.
+The window's SIZE is not part of that: this consumer lays the objects out to its own framebuffer, so
+a window the WM resizes follows its own viewport and the other seats do not move."
   (let ((c (if projection
-               (attach projection :fb fb :budget budget :invoker invoker)
-               (make-surface :fb fb :view view :rows-fn rows-fn
-                             :budget budget :invoker invoker))))
+               (attach projection :fb fb :view view :budget budget :invoker invoker)
+               (if type-fn-p
+                   (make-surface :fb fb :view view :rows-fn rows-fn :type-fn type-fn
+                                 :budget budget :invoker invoker)
+                   (make-surface :fb fb :view view :rows-fn rows-fn
+                                 :budget budget :invoker invoker)))))
     (glass:with-fb-locked (fb) (glass:fb-fill fb +bg+))
     (values
      ;; on-key: Escape dismisses an open menu, which is the only key this surface needs yet
@@ -429,16 +523,23 @@ describes: the query runs for whichever window needs a fresher epoch, and the ot
      (lambda () (and (tick c) t))
      c)))
 
-(defun run (&key (port 5910) (width 480) (height 448) (name "warp") view rows-fn projection
+(defun run (&key (port 5910) (width 480) (height 448) (name "warp") view rows-fn
+                 (type-fn nil type-fn-p) projection (scroll-y 0)
                  (hz 4) (budget 400) (invoker :allowlist))
   "Serve a warp surface over RFB on PORT.  Returns the CONSUMER; the paint loop and the RFB server
 each run on their own thread.  Pass PROJECTION (and no ROWS-FN) to serve a second seat, on its own
-port with its own budget, at a result-set already being looked at."
+port, with its own budget, its own window size and its own scroll offset, at a result-set already
+being looked at."
   (let* ((fb (glass:make-framebuffer width height +bg+))
          (c (if projection
-                (attach projection :fb fb :budget budget :invoker invoker :name name :port port)
-                (make-surface :fb fb :port port :name name :view view :rows-fn rows-fn
-                              :budget budget :invoker invoker))))
+                (attach projection :fb fb :view view :budget budget :invoker invoker
+                                   :name name :port port :scroll-y scroll-y)
+                (if type-fn-p
+                    (make-surface :fb fb :port port :name name :view view :rows-fn rows-fn
+                                  :type-fn type-fn :budget budget :invoker invoker
+                                  :scroll-y scroll-y)
+                    (make-surface :fb fb :port port :name name :view view :rows-fn rows-fn
+                                  :budget budget :invoker invoker :scroll-y scroll-y)))))
     (bt:make-thread
      (lambda ()
        (handler-case

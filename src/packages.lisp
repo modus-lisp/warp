@@ -20,6 +20,6 @@
    #:applicable-commands #:invoke #:command-refused #:refused-command #:refused-reason
    #:gesture-command
    ;; projections + layout
-   #:present #:layout-list #:list-content-height
+   #:present #:layout-list #:list-content-height #:row-type-of
    ;; time as an input
    #:+tick-seconds+ #:now-tick))

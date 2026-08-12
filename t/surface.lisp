@@ -21,16 +21,10 @@
 (defvar *rows*
   (list (make-instance 'warp-monitor::enrolment :pubkey "aa11bb22cc" :expires (+ 99999 (- (get-universal-time) 2208988800)))
         (make-instance 'warp-monitor::enrolment :pubkey "dd33ee44ff" :expires (+ 99999 (- (get-universal-time) 2208988800)))))
-(defun rows-fn ()
-  (let ((tick (warp:now-tick)) (i -1))
-    (mapcar (lambda (o)
-              (incf i)
-              (warp:make-presentation :key (warp:presentation-key 'warp-monitor::enrolment o)
-                                      :type 'warp-monitor::enrolment :object o
-                                      :extent (warp:snap-extent 0 (* i 32) 480 32)
-                                      :fingerprint (warp:present o 'warp-monitor::enrolment 'warp-monitor::monitor-view)
-                                      :as-of tick))
-            *rows*)))
+;;; The projection is the QUERY: it returns the domain objects and nothing else.  Presenting them,
+;;; laying them out and giving them extents is the consumer's, so this fixture no longer has to
+;;; decide how big a window is or where it is scrolled to (DESIGN.md rule 8).
+(defun rows-fn () *rows*)
 
 (defvar *sf* (warp-glass::make-surface :fb (glass:make-framebuffer 480 448 warp-glass:+bg+)
                                        :view 'warp-monitor::monitor-view :rows-fn #'rows-fn
