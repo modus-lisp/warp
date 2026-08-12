@@ -38,8 +38,20 @@
   extent                  ; (x y w h), framebuffer space, grid-snapped
   (as-of nil)             ; when the underlying data was read; makes stale delivery honest
   (fingerprint nil)       ; EQUAL-compared summary of what the appearance depends on
+  (state nil)             ; per-CONSUMER view state (see below); EQUAL-compared like FINGERPRINT
   (cost nil)              ; optional override; defaults to the extent's macroblock count
   (children '()))
+
+;;; STATE is rules 7 and 8 meeting in one slot.  FINGERPRINT is what the PROJECTION derived the
+;;; appearance from — object, type, view — and it is shared by every consumer looking at this row.
+;;; STATE is what THIS consumer's view state adds to it: selected, expanded.  Two people looking at
+;;; one list have one list and two selections, so the two cannot live in the same slot; but they are
+;;; compared identically, because from the reconciler's side "selection moved" and "the value
+;;; changed" are the same event — this row no longer looks the way you were told it looks.
+;;;
+;;; It is a plist, and NIL is the overwhelmingly common value: a consumer annotates the row it has
+;;; selected and shares the projection's own presentation, untouched, for every other row.  That is
+;;; the copy-on-write default, and it is what keeps the shared half genuinely shared.
 
 (defun p-macroblocks (p)
   "How many 16px macroblocks this presentation's extent covers — the natural cost unit, since the

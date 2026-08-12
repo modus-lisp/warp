@@ -54,7 +54,10 @@ Pure: computes what is owed, decides nothing about budget."
            (push (%make-delta :kind :appeared :key key :presentation new :extent (p-extent new)) out))
           (t
            (let ((moved (%translation old new))
-                 (same-look (equal (p-fingerprint old) (p-fingerprint new))))
+                 ;; the projection's content AND this consumer's view state: a row the consumer has
+                 ;; selected does not look the way it was told it looks (DESIGN.md rules 7 and 8)
+                 (same-look (and (equal (p-fingerprint old) (p-fingerprint new))
+                                 (equal (p-state old) (p-state new)))))
              (cond
                ;; unchanged content that merely translated: the cheap case rule 2 exists for
                ((and same-look moved)

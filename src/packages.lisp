@@ -4,8 +4,9 @@
   (:use #:cl)
   (:export
    ;; presentations
-   #:presentation #:make-presentation #:p-key #:p-type #:p-object #:p-extent #:p-as-of
-   #:p-fingerprint #:p-children #:p-cost
+   #:presentation #:make-presentation #:copy-presentation
+   #:p-key #:p-type #:p-object #:p-extent #:p-as-of
+   #:p-fingerprint #:p-state #:p-children #:p-cost
    #:define-presentation-key #:presentation-key
    #:+grid+ #:snap #:snap-extent #:extent-x #:extent-y #:extent-w #:extent-h
    ;; the delta stream
