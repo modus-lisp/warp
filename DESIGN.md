@@ -346,6 +346,41 @@ Two consequences worth stating, because they are what the fused version got wron
 > signature is `(object type view)` with no room for a seat's state, and an encoding needs the two
 > halves apart — one tints a row, another would write "(selected)".
 >
+> **There are three encodings now, and the third was written from outside.** `warp-dom` is a DOM in
+> somebody else's browser: it depends on `"warp"` and nothing else, never loads glass, and supplies
+> five methods. One projection, one query, a framebuffer painting macroblocks and a browser
+> receiving JSON — `demo/two-encodings.lisp` asserts the query count, each consumer's own working
+> set, and that the shared projection carries no position of any kind.
+>
+> Writing it from outside is what found the three places core was still shaped like a framebuffer,
+> each of which is now a question asked of the consumer:
+>
+> - **`delta-cost (consumer delta)`.** Cost was `ceil(w/16)·ceil(h/16)`, so rule 4's budget was a
+>   *pixel* budget for every consumer that would ever exist — and an extent-less one cost a flat 1,
+>   which silently degenerates `budget` into "N deltas per pass". A browser's budget is **bytes on a
+>   data channel**. glass deliberately does not specialise it: its unit *is* the default's.
+> - **`moved-p (consumer old new)`.** Recognising a *reposition* is the encoding's, because only the
+>   encoding knows what position is. A browser reorders siblings; it has no translation vector, so
+>   `moved-p` returns a bare `t` and the new place travels on the presentation. And `p-extent` is
+>   revealed as over-named: it is **this encoding's positional claim**, and only the framebuffer's is
+>   a rectangle. The DOM's is `(parent . after-key)` — exactly what `insertBefore` takes, and rule 1's
+>   "keys are scoped to the parent" written as data.
+> - **`content-height`.** The scroll axis is in the consumer's own unit — pixels for a framebuffer,
+>   **rows** for a browser that reports "I can show 12 and I am 3 down". One scroll slot, rule 7
+>   intact, and the clamp lands in the right unit. That report is the
+>   consumer-negotiated-slice capability arriving for a *human* surface, which the "agent can
+>   renegotiate, a human cannot" section did not expect: a browser is more like an agent than like a
+>   framebuffer here, because it knows its own viewport and a retina does not.
+>
+> And one bug the generalisation exposed rather than introduced: `p-macroblocks` read `p-extent` as
+> four numbers and signalled on anything else, so core's own default cost *crashed* on a position it
+> did not recognise. A pixel assumption with a stack trace attached is the same bug as one without.
+>
+> Rule 5 came out best: glass hit-tests pixels only because RFB flattened the gesture, and a browser
+> sends back the key it already holds, so the whole of `hit` is three lines. The vocabulary needed no
+> new verb — `hold-drag-release` decomposes into `hold` plus a tap on a menu item, because menu items
+> are presentations.
+>
 > Per-consumer work went from ~0 to O(visible rows), as intended: ~0.25 µs a row, +2.5 µs per seat
 > per tick for a 14-row viewport, against a 66 µs file query. **There is no crossover.** N seats over
 > one projection cost `Q + N·(L+D)`; the N projections you would otherwise need for N scroll offsets

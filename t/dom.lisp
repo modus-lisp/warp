@@ -146,6 +146,34 @@
   (setf *rows* original)
   (tick *d*))
 
+;;; ---- 4b. the contract the CLIENT has to satisfy, pinned here -----------------
+;;; A rectangle is absolute, so deltas carrying rectangles apply in any order.  An anchor is
+;;; RELATIVE, and "insert X after Y" is unappliable until Y exists.  Two independent things put an
+;;; anchor after its dependent, and neither is a bug to be fixed on the server:
+;;;
+;;;   * the reconciler emits within a priority band in reverse layout order (below);
+;;;   * and the BUDGET can defer the anchor to a later pass entirely, which NO ordering rule on the
+;;;     server could repair.
+;;;
+;;; So the client must be able to hold a node it cannot yet place.  Asserted here rather than only
+;;; in the browser, because it is a property of the WIRE and it is what dom/client.html's `waiting`
+;;; map exists for — and a future reordering of emission must not be mistaken for making that
+;;; requirement go away.
+
+(format t "~&== a delta's anchor may arrive AFTER the delta that needs it ==~%")
+(on-message *d* "{\"t\":\"viewport\",\"rows\":4,\"scroll\":0}")
+(tick *d*)
+(on-message *d* "{\"t\":\"viewport\",\"rows\":6,\"scroll\":0}")
+(let* ((ds (tick *d*))
+       (order (mapcar #'delta-key ds))
+       (anchors (mapcar (lambda (x) (cdr (delta-extent x))) ds)))
+  (format t "     emitted ~{~a~^ ~} anchored to ~{~a~^ ~}~%" order (substitute "-" nil anchors))
+  (ok "two rows appended arrive as :appeared" (= 2 (count :appeared (kinds ds))))
+  (ok "and at least one names an anchor that is later in the SAME pass — a forward reference"
+      (some (lambda (d) (let ((a (cdr (delta-extent d))))
+                          (and a (member a (cdr (member d ds)) :key #'delta-key :test #'equal))))
+            ds)))
+
 ;;; ---- 5. the budget is BYTES, and it bites -----------------------------------
 
 (format t "~&== a byte budget, spent in bytes ==~%")

@@ -21,4 +21,20 @@ See [DESIGN.md](DESIGN.md) for the rules and, more importantly, for what is deli
 
 ## Status
 
-Design settled; first client (the glass device manager) not yet written.
+The protocol is in `warp` and depends on `bordeaux-threads` and nothing else. **Three encodings:**
+
+| system | target | budget spent in | position is |
+|---|---|---|---|
+| `warp-glass` | a glass framebuffer, over RFB | 16px macroblocks | `(x y w h)`, grid-snapped |
+| `warp-dom` | a DOM in a browser, over JSON | serialized bytes | `(parent . after-key)` |
+| `warp` itself | `recording-consumer` — the deltas, kept | a flat 1 per delta | whatever it is handed |
+
+One projection, one query, several consumers, each with its own stream, budget, viewport, scroll,
+selection and invoker.
+
+- `demo/two-encodings.lisp` — a framebuffer and a browser over one query, asserted rather than drawn
+- `demo/serve-dom.lisp` — the DOM consumer live in a browser on a local port
+- `t/browser.sh` — the same thing verified in a headless Chromium
+- `demo/damage-film.lisp` — the delta stream, rendered so you can watch it
+
+First practical client is the pipeline monitor (`app/`), not the device manager.

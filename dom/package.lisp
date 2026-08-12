@@ -11,6 +11,10 @@
 
 (defpackage #:warp-dom
   (:use #:cl)
+  ;; bordeaux-threads arrives with :warp (a projection is shared across consumers that tick on their
+  ;; own threads), so the nickname is available even though warp-dom itself does not name it as a
+  ;; dependency.  Only warp-dom/serve — the transport — actually uses it.
+  (:local-nicknames (#:bt #:bordeaux-threads))
   (:import-from #:warp
                 #:consumer #:attach #:detach #:tick #:tick-all #:resync #:pull
                 #:lay-out #:apply-deltas #:menu-presentations #:delta-cost #:moved-p
@@ -22,6 +26,7 @@
                 #:consumer-invoker #:consumer-selected #:consumer-menu #:consumer-scroll-y
                 #:consumer-visible #:consumer-last-result #:consumer-landed #:consumer-emitted
                 #:consumer-passes #:consumer-deferred #:consumer-stop #:consumer-name
+                #:consumer-lock #:cmd-destructive #:cmd-cost #:cmd-label
                 #:consumer-width #:consumer-viewport-h #:consumer-row-height
                 #:presentation #:make-presentation #:presentation-key
                 #:p-key #:p-type #:p-object #:p-extent #:p-as-of #:p-fingerprint #:p-state
