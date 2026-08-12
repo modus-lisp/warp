@@ -2,6 +2,7 @@
 
 (defpackage #:warp
   (:use #:cl)
+  (:local-nicknames (#:bt #:bordeaux-threads))
   (:export
    ;; presentations
    #:presentation #:make-presentation #:copy-presentation
@@ -21,5 +22,23 @@
    #:gesture-command
    ;; projections + layout
    #:present #:layout-list #:list-content-height #:row-type-of
+   ;; rule 8: the projection is the QUERY and is shared
+   #:projection #:make-projection #:projection-rows-fn #:projection-type-fn
+   #:projection-objects #:projection-as-of #:projection-epoch #:projection-queries
+   #:projection-consumers #:projection-lock #:pull
+   ;; rule 8: the consumer is whatever owns an encoding target.  LAY-OUT, APPLY-DELTAS and
+   ;; MENU-PRESENTATIONS are the seam a second encoding specialises.
+   #:consumer #:attach #:detach #:tick #:tick-all #:resync
+   #:lay-out #:apply-deltas #:menu-presentations
+   #:viewport-width #:viewport-height #:content-height #:scroll-to #:scroll-by
+   #:recording-consumer #:consumer-record #:take-record
+   #:consumer-projection #:consumer-rows-fn #:consumer-name #:consumer-view #:consumer-stream
+   #:consumer-budget #:consumer-invoker #:consumer-selected #:consumer-menu
+   #:consumer-scroll-y #:consumer-width #:consumer-viewport-h #:consumer-row-height
+   #:consumer-visible #:consumer-last-result #:consumer-epoch #:consumer-lock #:consumer-stop
+   #:consumer-landed #:consumer-emitted #:consumer-passes #:consumer-deferred
+   ;; menus are presentations too; gestures are recognized at the edge and mean the same everywhere
+   #:menu-item #:make-menu-item #:mi-kind #:mi-command #:mi-target
+   #:open-menu #:confirm-menu #:close-menu #:on-gesture #:run-command
    ;; time as an input
    #:+tick-seconds+ #:now-tick))
