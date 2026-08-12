@@ -279,10 +279,24 @@ Two consequences worth stating, because they are what the fused version got wron
   framebuffer, so they share scroll — that is two people at one screen and warp should not invent a
   way to disagree about it. What they do not share is stream, budget, invoker, selection, or menu.
 
-> **Status:** shipped fused (`d0ed2bf`, `b4cf950`) — two consumers share scroll and viewport because
-> they are two seats at one window. Splitting layout out of the projection is its own change, with
-> its own no-change proof. It is half-built already: `monitor-rows` is separate from
-> `monitor-presentations`, and `layout-list` is in core.
+> **Status:** shipped. The seat/projection split landed fused (`d0ed2bf`, `b4cf950`); the boundary
+> moved below layout in `84b967a`, so the table above is now what the code does. `rows-fn` returns
+> objects, a `type-fn` says what a row *is* (a property of the result-set, not of the seat), and
+> `present`, layout, extents, `view`, scroll and viewport are the consumer's — `lay-out` and
+> `apply-deltas` generic on it, which is the seam a DOM or token encoding subclasses.
+>
+> **The `view` bullet above is spent.** Fingerprints are per consumer now, derived under its own view
+> at its own offset, so two seats holding *different* views diff correctly against one projection and
+> one query. A second view is no longer a second projection.
+>
+> `p-state` survives the copy-on-write machinery that motivated it, for a better reason: `present`'s
+> signature is `(object type view)` with no room for a seat's state, and an encoding needs the two
+> halves apart — one tints a row, another would write "(selected)".
+>
+> Per-consumer work went from ~0 to O(visible rows), as intended: ~0.25 µs a row, +2.5 µs per seat
+> per tick for a 14-row viewport, against a 66 µs file query. **There is no crossover.** N seats over
+> one projection cost `Q + N·(L+D)`; the N projections you would otherwise need for N scroll offsets
+> cost `N·(Q+L+D)`. Sharing wins for every N > 1 whenever the query costs anything at all.
 
 ### What this makes real
 
