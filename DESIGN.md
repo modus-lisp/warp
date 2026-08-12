@@ -313,6 +313,35 @@ Two consequences worth stating, because they are what the fused version got wron
 > at its own offset, so two seats holding *different* views diff correctly against one projection and
 > one query. A second view is no longer a second projection.
 >
+> **The protocol is in core.** All of the above first shipped inside `warp-glass`, and the consumer
+> it shipped was framebuffer-shaped: `apply-deltas`'s only method needed an `fb`, the viewport
+> defaulted off one, and `menu-presentations` measured itself against `glass:fb-width` — so a DOM or
+> token consumer had to subclass a class in the glass package, and load glass, to reach a protocol
+> that has nothing to do with pixels. `projection`, `consumer`, `pull`, `lay-out`, `apply-deltas`,
+> `menu-presentations`, scroll, the menu model and `on-gesture` are `warp` now. `warp-glass` is one
+> encoding: paint, pixel hit-testing, RFB input, menu geometry, and an `fb-consumer` whose target is
+> a framebuffer. The names it used to own are imported and re-exported, so `warp-glass:tick` *is*
+> `warp:tick` — the same symbol, not a wrapper — and no call site moved.
+>
+> Three judgement calls fell out of it, each one a place the old shape was lying:
+>
+> - **the viewport is ordinary slots.** It used to be read off the framebuffer, which quietly made
+>   "how big is the view" a pixel question for every consumer. An encoding that knows better says so
+>   by specialising `viewport-width` / `viewport-height`.
+> - **the menu model is core; only its measurement is glass's.** Rules 5 and 6 are warp concepts, and
+>   a consumer that reimplemented "destructive commands confirm first" would be the second
+>   enforcement point rule 6 refuses. So core owns what a menu is and what tapping an item does, and
+>   its default items carry **no extents at all** — geometry is a claim only an encoding can make.
+>   Same line for input: resolving `(x, y)` to a presentation is the encoding's, what the gesture
+>   *means* once it lands is `on-gesture`.
+> - **a consumer with no encoding target cannot be constructed.** Not one that crashes the first time
+>   a budget happens to let something through, which is indistinguishable from an intermittent
+>   reconciler bug. `initialize-instance` refuses a consumer with no applicable `apply-deltas`.
+>
+> `t/core.lisp` is the standing proof: the entire round trip — pull, lay out, budget, defer, drain,
+> menu, gesture, refusal, and a second encoding written in twelve lines — in an image where glass has
+> never been loaded.
+>
 > `p-state` survives the copy-on-write machinery that motivated it, for a better reason: `present`'s
 > signature is `(object type view)` with no room for a seat's state, and an encoding needs the two
 > halves apart — one tints a row, another would write "(selected)".
