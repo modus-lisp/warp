@@ -192,9 +192,83 @@ independent reason the refusal of translators is not merely discipline.
 
 ## Rule 7 — view state is presentations too
 
-Scroll offset, selection, expanded/collapsed. Server-side (the client is a dumb glass), per-*view*
-not per-object, and preserved across rebuilds — **keyed the same way presentations are.** A fourth
-line in rule 1, not a new system.
+Scroll offset, selection, expanded/collapsed. Server-side (the client is a dumb glass),
+per-*consumer*-per-*view* not per-object, and preserved across rebuilds — **keyed the same way
+presentations are.** A fourth line in rule 1, not a new system. (Per *consumer*: see rule 8. Two
+people looking at one list have one list and two selections.)
+
+## Rule 8 — the consumer is the seat; the projection is shared
+
+`warp-glass::surface` currently holds one shared thing and a pile of private ones:
+
+```lisp
+rows-fn    ; () -> the current result-set        <- THE PROJECTION.  shared.
+stream     ; what has been emitted so far        <- what THIS consumer holds
+budget     ; 400                                 <- THIS consumer's link
+selected menu                                    <- rule 7 view state
+invoker    ; :allowlist                          <- WHO is asking
+fb                                               <- where it lands
+```
+
+One field is the thing being looked at. Every other field is a property of *the one looking*. With a
+single consumer nothing forces the distinction, which is exactly why it has to be written down before
+the second one arrives.
+
+> **The projection is computed once per tick and fanned out. Every other field is per consumer.**
+
+glass reached the same split from the other side: a seat is one person watching a session — own
+screen, own pointer, own focus, own clipboard, own mix — over shared windows and shared window
+*sizes*. **A glass seat and a warp consumer are the same object**, and the fields line up one for one.
+
+### The stream is a memory, and memories are not shared
+
+The efficiency argument (N consumers should not run N copies of the same query) is the weak one.
+The correctness argument is that **`stream` is the consumer's memory of what it has already been
+told.** Share one between two consumers and a change is emitted once, painted to whichever ticked
+first, and the other is never told — it is not stale, it is *wrong*, and it looks correct because the
+code emitted the delta exactly once as designed. A late joiner is the same bug wearing a different
+hat: its memory must start empty and get a snapshot, not inherit someone else's high-water mark.
+
+This is the third time this decomposition has been forced, and the third time the destructive-read is
+the tell:
+
+| plane | pulled once | fanned out per consumer |
+|---|---|---|
+| compositor | the window paints itself | each seat composites its own screen |
+| mixer | `(funcall (src-thunk s))` **advances** the source | each seat sums with its own gains |
+| warp | the query runs | each consumer diffs against its own stream, under its own budget |
+
+The mixer is the cautionary one: two clocks pulling the same source take *alternate* frames and both
+listeners hear it at double speed with half missing. `stream` is the same hazard in a slower coat.
+
+### Co-presence and independence are the window question, not a new concept
+
+Two seats holding the *same window* share its content framebuffer, so they share scroll and
+selection. That is correct — it is two people at one screen, and warp should not invent a way to
+disagree about it. Independent scroll means two windows, which means two consumers over one
+projection. glass already draws that line; warp needs no concept for it beyond letting a projection
+have more than one subscriber.
+
+### What this makes real
+
+- **`invoker` stops being a constant.** Seat A the owner, seat B a guest, one list, and the hold-menu
+  offers each the commands they may actually invoke. Rule 6 is unchanged — enforcement stays at
+  invocation, menu filtering stays courtesy — but it stops describing a hypothetical.
+- **The agent stops being a special case.** Give a consumer an *encoding* (macroblocks for a retina,
+  DOM for a browser, tokens for a model) and a *negotiable* flag, and "a context window is a
+  viewport" is no longer an analogy: an agent is a consumer with a token encoding, its own budget,
+  its own stream, and a narrower invoker. Consumer-negotiated slices (below) is then the one
+  capability that differs, rather than a separate architecture.
+- **Rule 7 gains its fourth line.** View state is per-*consumer*-per-view, keyed the way
+  presentations are.
+
+### Doing it
+
+Split `surface` into a shared projection and a per-consumer view, keeping delegating accessors so the
+single-consumer path is untouched, and prove the one-consumer case is unchanged before adding a
+second. glass ran exactly this refactor twice in one week; the method that worked both times was
+copy-on-write defaults plus a no-change proof — a scripted session dumped as (damage box, hint, hash
+of every pixel) per step, compared line for line against the previous build.
 
 ## Staleness and cost are first-class
 
@@ -249,7 +323,8 @@ on request.
 
 So: the protocol is shared, but *slice negotiation* is a consumer capability. Human surfaces are
 curated — someone chose the slice in advance. Agent surfaces are negotiated. Same tree, same deltas,
-same budget discipline.
+same budget discipline — and under rule 8, the same *object*: negotiability is a flag on a consumer,
+not a second kind of surface.
 
 ## The one bite of "every view is an inspector"
 
