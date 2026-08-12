@@ -199,7 +199,8 @@ people looking at one list have one list and two selections.)
 
 ## Rule 8 — the consumer is the seat; the projection is shared
 
-`warp-glass::surface` currently holds one shared thing and a pile of private ones:
+`warp-glass::surface` — the whole UI, before this rule — held one shared thing and a pile of private
+ones:
 
 ```lisp
 rows-fn    ; () -> the current result-set        <- THE PROJECTION.  shared.
@@ -214,6 +215,10 @@ One field is the thing being looked at. Every other field is a property of *the 
 single consumer nothing forces the distinction, which is exactly why it has to be written down before
 the second one arrives.
 
+(Kept as written, because it is the argument. Both halves have since moved: `rows-fn` returns
+*objects* rather than a laid-out result-set, and `view` — absent above — went to the consumer with
+layout. See "Where the boundary goes" below.)
+
 > **The projection is pulled once per epoch and shared. Every other field is per consumer.**
 
 Not "once per tick and fanned out" — that wording implies a shared clock and a driver, and there is
@@ -225,7 +230,26 @@ Query count is the *max* of the consumers' tick counts, never the sum.
 
 glass reached the same split from the other side: a seat is one person watching a session — own
 screen, own pointer, own focus, own clipboard, own mix — over shared windows and shared window
-*sizes*. **A glass seat and a warp consumer are the same object**, and the fields line up one for one.
+*sizes*.
+
+### A consumer is whatever owns an encoding target — which is not always a seat
+
+The first draft said a glass seat and a warp consumer are the same object. That is false, and moving
+layout down is what exposed it: a consumer is bound to the thing it encodes *into*, and under glass's
+seat model the content framebuffer belongs to the **window**, shared by every seat looking at it. So
+two glass seats at one glass window are **one** warp consumer — sharing not only scroll (which this
+rule wants) but stream, budget, `invoker`, selection and menu (which it explicitly does not).
+
+The sharpened claim:
+
+> **A consumer is whatever owns an encoding target.** For a browser that is a person; for a token
+> stream it is a session; for glass it is a *window*, because glass seats deliberately share window
+> content.
+
+So "owner and guest see different hold-menus over one list" needs two **windows**, not two seats at
+one window — which is the same answer glass gives for independent scroll, and consistent with
+co-presence meaning two people at one screen. The identity `seat = consumer` holds exactly where a
+seat has a private encoding target, and glass is precisely the case where it does not.
 
 ### The stream is a memory, and memories are not shared
 
