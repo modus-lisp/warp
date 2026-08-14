@@ -40,9 +40,12 @@ channel in the glass-webrtc gateway, and they share `dom/client.js` as well.
 
 - `demo/two-encodings.lisp` — a framebuffer and a browser over one query, asserted rather than drawn
 - `demo/serve-dom.lisp` — the DOM consumer live in a browser on a local port
+- `demo/serve-both.lisp` — two apps over one link, which is what the gateway does on stream 102
 - `t/channel.lisp` — the channel, over a fake transport: deltas out, gestures in, budget in bytes,
-  owner and guest on one projection, and a guest's `revoke` refused at invocation
-- `t/browser.sh` / `t/panel.sh` — the standalone client, and the phone panel, in a headless Chromium
+  owner and guest on one projection, a guest's `revoke` refused at invocation, and the mux that
+  routes several projections down one link
+- `t/browser.sh` / `t/panel.sh` / `t/two-apps.sh` — the standalone client, the phone panel, and the
+  device manager and file browser at once, all in a headless Chromium
 - `t/nochange.lisp` — a 40-step scripted session over both encodings, dumped per step, so a
   refactor can be *shown* to have changed nothing
 - `demo/damage-film.lisp` — the delta stream, rendered so you can watch it
@@ -72,3 +75,12 @@ It also falsified rule 1's opening line: the reconciler does **not** match on `(
 holds one flat table keyed by `p-key`, `p-children` is read by nothing, and parent scoping is
 something a key function has to do for itself. See DESIGN.md rules 1 and 9 for what that costs and
 what it does not.
+
+**It runs on the phone now, beside the device manager, on the one data channel there is.** A client
+message may carry `a` — the app it is for — and a frame carries `a` back; the device manager is the
+app with **no** name, so its bytes are exactly what they were. A second channel would have been
+simpler and was not available: channels are created before the offer, in the shell that lives on
+nsite, so one more of them costs a publish. Putting `warp-files` on a phone also found the two
+things no flat client could: the DOM client had no containers at all (everything that was not
+`rows` went to the hold-menu), and nothing on the wire said where a container goes — the frame
+carries `cs` for that now.

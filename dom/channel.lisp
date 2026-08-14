@@ -59,7 +59,8 @@ are COUNTED whether or not anyone is listening; this only decides who hears abou
 ;;; ---- opening ------------------------------------------------------------------
 
 (defun open-channel (projection &key send (view nil) (rows 12) (budget 4096)
-                                     (invoker :device) (hz 8) (name "warp") log)
+                                     (invoker :device) (hz 8) (name "warp") log
+                                     (app nil) (attach #'attach-dom))
   "Seat a DOM consumer on PROJECTION and put its frames on SEND.  Returns a DOM-CHANNEL.
 
 INVOKER IS THE CALLER'S AND HAS NO DEFAULT WORTH TRUSTING — it defaults to :DEVICE, the narrower
@@ -71,8 +72,20 @@ is the number on the link, and it is the one thing that must change with the tra
 socket is handed a generous one and a cellular data channel a small one.
 
 With HZ non-NIL this starts one thread that ticks until CHANNEL-CLOSE.  With HZ NIL nothing is
-started and the caller drives CHANNEL-TICK."
-  (let* ((c (attach-dom projection :view view :rows rows :budget budget :invoker invoker))
+started and the caller drives CHANNEL-TICK.
+
+APP is the routing label a multiplexed link puts on this consumer's frames, or NIL for the host's
+only (or default) projection — see MAKE-MUX.
+
+ATTACH is the function that seats the consumer, and it is an argument because an app may have a
+consumer CLASS of its own: warp-files' Miller layout is a mixin in front of DOM-CONSUMER, and the
+only thing this file needs to know about that is that somebody else's function makes one.  The
+default is this encoding's own, so a caller who has never heard of any of this passes nothing."
+  ;; VIEW is passed only when there IS one: an app's own ATTACH may supply a default, and MAKE-
+  ;; INSTANCE takes the leftmost of a duplicated initarg — so handing it an explicit NIL would beat
+  ;; the app's default and quietly demote a designed view to the MOP slot walk.
+  (let* ((c (apply attach projection :rows rows :budget budget :invoker invoker :app app
+                   (when view (list :view view))))
          (ch (make-instance 'dom-channel :consumer c :send send :hz hz :name name :log log)))
     ;; The sink is installed AFTER the consumer exists so it can close over the channel and count
     ;; what it puts on the link.  A frame that the transport refuses is still a frame the encoding
@@ -161,6 +174,80 @@ with the roles reversed."
       (setf (channel-thread ch) nil)
       (ignore-errors (bt:join-thread th :timeout 2))))
   ch)
+
+;;; ---- several projections, one link ------------------------------------------------
+;;;
+;;; A phone gets the data channels its SHELL created before the offer, and signalling is one-shot
+;;; with no renegotiation path anywhere in the system — so a second app cannot have a channel of its
+;;; own without a new shell on nsite.  The link is therefore fixed and the projections are not, and
+;;; the multiplex has to live above the transport.
+;;;
+;;; It lives HERE, and not in the gateway, for the reason this whole file exists: a gateway is a
+;;; thing we may not run, so anything that can be driven by a fake transport in a test belongs on
+;;; this side of the line.  What the gateway is left with is a function from an app id to a channel.
+;;;
+;;; THE DEFAULT APP IS THE ONE WITH NO NAME.  A message with no `a` routes to NIL and its frames go
+;;; back unlabelled, so a client that has never heard of any of this — and the bytes on its link —
+;;; are exactly what they were.  Naming the default instead would have been tidier and would have
+;;; changed every frame the device manager has ever sent.
+
+(defclass dom-mux ()
+  ((open-fn :initarg :open-fn :reader mux-open-fn
+            :documentation "(app-id) -> a DOM-CHANNEL, or NIL if this host does not serve that app.
+Called at most once per app: the FIRST message naming it is what opens it, which is the same
+discipline a negotiated data channel already forces on the link itself.")
+   (channels :initform '() :accessor mux-channels
+             :documentation "(app-id . channel), app-id being a string or NIL for the default.")
+   (refused :initform '() :accessor mux-refused
+            :documentation "App ids OPEN-FN has already declined, so a client that keeps asking
+costs one answer rather than one load attempt per message."))
+  (:documentation "Several projections over one link, routed by the label on the client's message."))
+
+(defun make-mux (open-fn)
+  (make-instance 'dom-mux :open-fn open-fn))
+
+(defun message-app (text)
+  "The app a client message is addressed to: the `a` field, or NIL for the default projection.
+
+Parsing it here rather than in a host is the point — this is the one line of routing a gateway would
+otherwise have to do by hand, and it is a JSON reader's job.  Never signals: a malformed message
+from a peer is data, and it routes to the default app, where ON-MESSAGE ignores it as it always did."
+  (let ((msg (handler-case (from-json text) (error () nil))))
+    (let ((a (and msg (json-get msg "a"))))
+      (and (stringp a) (plusp (length a)) a))))
+
+(defun mux-receive (mux text)
+  "Route one client message to its app's channel, opening that channel if this is its first message.
+Returns the channel it went to, or NIL if this host does not serve that app — in which case the
+message is DROPPED, which is the honest report of a box that does not have the thing being asked
+for.  Never signals."
+  (let* ((app (message-app text))
+         (cell (assoc app (mux-channels mux) :test #'equal)))
+    (cond
+      (cell (channel-receive (cdr cell) text) (cdr cell))
+      ((member app (mux-refused mux) :test #'equal) nil)
+      (t
+       (let ((ch (handler-case (funcall (mux-open-fn mux) app) (error () nil))))
+         (cond
+           ((null ch) (push app (mux-refused mux)) nil)
+           (t (push (cons app ch) (mux-channels mux))
+              (channel-receive ch text)
+              ch)))))))
+
+(defun mux-close (mux)
+  "Close every channel this link opened, in the order they were opened.  Called from an unwind path,
+so it may not signal and may be called with nothing to close.
+
+The list is KEPT rather than emptied: CHANNEL-CLOSE is idempotent, so a second call is harmless, and
+a host that wants to log what a session did — or a test that wants to check the consumers really
+were unseated — needs the closed channels to still be reachable afterwards."
+  (dolist (cell (reverse (mux-channels mux)) nil)
+    (ignore-errors (channel-close (cdr cell))))
+  nil)
+
+(defun mux-apps (mux)
+  "The app ids this link has actually opened, oldest first."
+  (mapcar #'car (reverse (mux-channels mux))))
 
 ;;; ---- what a host wants to log ----------------------------------------------------
 

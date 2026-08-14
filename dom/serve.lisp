@@ -43,18 +43,23 @@
 
 (defstruct (dom-server (:conc-name ds-))
   socket port projection thread (consumers '()) (stop nil) (hz 8)
-  view rows budget invoker)
+  view rows budget invoker (apps '()))
 
 (defun serve-dom (projection &key (port 8787) view (rows 14) (budget 100000)
-                                  (invoker :allowlist) (hz 8))
+                                  (invoker :allowlist) (hz 8) (apps '()))
   "Serve PROJECTION to browsers on PORT.  Every connection is its OWN consumer — its own stream, its
 own budget, its own scroll, its own menu — which is rule 8 arriving for free: two tabs are two
 consumers over one query, exactly as two glass windows are.
 
+APPS are FURTHER projections on the same connection, as (id . plist) with :PROJECTION and optionally
+:VIEW :ATTACH :ROWS :BUDGET — the multiplex the gateway needs, driven here so it can be checked
+without one.  PROJECTION is the default app, the one a message with no `a` routes to and the one
+whose frames go back unlabelled.
+
 Returns a DOM-SERVER; STOP-DOM shuts it down."
   (let* ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp))
          (srv (make-dom-server :socket sock :port port :projection projection :hz hz
-                               :view view :rows rows :budget budget :invoker invoker)))
+                               :view view :rows rows :budget budget :invoker invoker :apps apps)))
     (setf (sb-bsd-sockets:sockopt-reuse-address sock) t)
     (sb-bsd-sockets:socket-bind sock #(127 0 0 1) port)
     (sb-bsd-sockets:socket-listen sock 8)
@@ -111,31 +116,47 @@ the invoker comes from the AUTHENTICATED PEER — the allowlist npub or the enro
 and this function does not exist."
   (if (search "as=device" path) :device default))
 
+(defun %app-channel (srv stream lock invoker app)
+  "Open the channel for APP on this connection, or NIL if this server does not serve it.  This is
+the whole of what a host supplies to MAKE-MUX, on either side of the line."
+  (let ((spec (and app (cdr (assoc app (ds-apps srv) :test #'equal)))))
+    (when (or (null app) spec)
+      (open-channel (if spec (getf spec :projection) (ds-projection srv))
+                    :send (lambda (frame)
+                            (bt:with-lock-held (lock) (ws-send-text stream frame)))
+                    :view (if spec (getf spec :view) (ds-view srv))
+                    :rows (if spec (getf spec :rows (ds-rows srv)) (ds-rows srv))
+                    :budget (if spec (getf spec :budget (ds-budget srv)) (ds-budget srv))
+                    :attach (or (and spec (getf spec :attach)) #'attach-dom)
+                    :app app
+                    :invoker invoker :hz (ds-hz srv)
+                    :name (format nil "ws:~a~@[/~a~]" (ds-port srv) app)
+                    :log (lambda (m) (format *error-output* "~&[warp-dom] ~a~%" m))))))
+
 (defun run-consumer (srv stream &optional (invoker (ds-invoker srv)))
-  "One browser, one consumer.  The socket is the SEND and nothing more: the encoding hands the
-channel a string and this lambda puts it on the wire.
+  "One browser, one consumer PER APP.  The socket is the SEND and nothing more: the encoding hands
+the channel a string and this lambda puts it on the wire.
 
 The lock is this function's and not the channel's, because it guards THE SOCKET — two threads
 interleaving WebSocket frames on one stream is a framing bug, and only the thing that owns the
-stream knows that.  Everything else about running a consumer on a link is CHANNEL-CLOSE's and
-CHANNEL-RECEIVE's, which is the same code the gateway runs."
+stream knows that.  With two apps on one socket there are two ticking threads writing to it, which
+is the same bug arriving from a second direction and is answered by the same lock.  Everything else
+about running consumers on a link is MUX-RECEIVE's and MUX-CLOSE's, which is the same code the
+gateway runs."
   (let* ((lock (bt:make-lock "warp-dom-write"))
-         (ch (open-channel (ds-projection srv)
-                           :send (lambda (frame)
-                                   (bt:with-lock-held (lock) (ws-send-text stream frame)))
-                           :view (ds-view srv) :rows (ds-rows srv)
-                           :budget (ds-budget srv) :invoker invoker :hz (ds-hz srv)
-                           :name (format nil "ws:~a" (ds-port srv))
-                           :log (lambda (m) (format *error-output* "~&[warp-dom] ~a~%" m))))
-         (c (channel-consumer ch)))
-    (push c (ds-consumers srv))
+         (mux (make-mux (lambda (app) (%app-channel srv stream lock invoker app)))))
     (unwind-protect
          ;; the read loop: recognized gestures and viewport reports, coming back by KEY.  The pass
-         ;; loop is the channel's own thread, at HZ.
+         ;; loop is each channel's own thread, at HZ.
          (loop
            (multiple-value-bind (text opcode) (ws-read-message stream)
              (when (or (null text) (eql opcode 8)) (return))
-             (when (eql opcode 1) (channel-receive ch text))))
-      (channel-close ch)
-      (setf (ds-consumers srv) (remove c (ds-consumers srv)))
+             (when (eql opcode 1)
+               (let ((ch (mux-receive mux text)))
+                 (when ch
+                   (let ((c (channel-consumer ch)))
+                     (pushnew c (ds-consumers srv))))))))
+      (dolist (cell (mux-channels mux))
+        (setf (ds-consumers srv) (remove (channel-consumer (cdr cell)) (ds-consumers srv))))
+      (mux-close mux)
       (ws-send-close stream))))

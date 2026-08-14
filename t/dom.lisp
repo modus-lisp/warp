@@ -311,6 +311,28 @@
     (not (equal (mapcar #'p-key (consumer-visible *d*))
                 (mapcar #'p-key (consumer-visible *phone*)))))
 
+(format t "~&== a flat app's frame is exactly the frame it always was ==~%")
+;;; The regression the multiplex and the nesting both have to survive: a consumer that names no app
+;;; and no containers of its own puts NO extra field on the wire.  Asserted on the frame's TEXT,
+;;; because the claim is about bytes: `a` and `cs` are absent, not empty, and the frame still opens
+;;; with the generation it has always opened with.
+(let ((f (progn (scroll-to *d* 0) (tick *d*) (jframe *d*))))
+  (ok "no app label on it" (null (json-get f "a")))
+  (ok "no container list on it" (null (json-get f "cs")))
+  (ok "and this consumer names no containers of its own — only the encoding's `rows`"
+      (null (warp-dom::app-containers *d*))))
+(ok "the frame's text still begins with the generation and nothing else"
+    (let ((s (frame-for *d* '())))
+      (and (eql 0 (search "{\"gen\":" s)) (null (search "\"a\":" s)) (null (search "\"cs\":" s)))))
+
+;;; And the other half of the same regression: the key a client sends back is the key it was GIVEN,
+;;; which is a STRING because JSON has no conses.  A flat client never noticed because its keys were
+;;; strings already; a nesting one whose key is (column . entry) resolved every gesture to NIL.
+(ok "a key that is not a string round-trips through the wire's PRINC and back"
+    (let* ((p (first (consumer-visible *d*)))
+           (k (princ-to-string (p-key p))))
+      (eq p (warp-dom::%visible-by-key *d* k))))
+
 (format t "~&== and still no glass, after all of that ==~%")
 (ok "the GLASS package still does not exist" (null (find-package "GLASS")))
 (ok "and neither does WARP-GLASS" (null (find-package "WARP-GLASS")))

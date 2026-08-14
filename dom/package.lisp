@@ -48,7 +48,7 @@
    ;; the encoding
    #:dom-consumer #:attach-dom #:dom-sink #:dom-outbox #:take-frames
    #:dom-rows #:dom-container #:dom-after #:frame-for #:delta-json
-   #:dom-sent-bytes #:dom-last-frame-bytes
+   #:dom-sent-bytes #:dom-last-frame-bytes #:dom-app #:app-containers
    ;; what the browser sends back
    #:on-message #:client-message
    ;; the channel: a consumer, a clock and a link, where the link is a function of one string
@@ -56,6 +56,8 @@
    #:channel-consumer #:channel-stats #:channel-send #:channel-hz #:channel-name
    #:channel-frames #:channel-bytes #:channel-received #:channel-send-errors
    #:channel-last-error #:channel-log
+   ;; several projections over one link, routed by the label on the client's message
+   #:dom-mux #:make-mux #:mux-receive #:mux-close #:mux-apps #:mux-channels #:message-app
    ;; JSON, because the wire is JSON and the tests read it
    #:to-json #:from-json #:json-get
    ;; re-exported so a caller never needs both packages open

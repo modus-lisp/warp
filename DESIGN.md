@@ -667,6 +667,39 @@ independent diff scopes**, which no client has yet exercised because both are fl
 > session. So the sequencing advice stands, but the hazard is not "nesting might not work". It is:
 > **the reconciler has one scope, and a session wants one per window.**
 
+> **What met the code, again: the wire nested and the CLIENT did not — and the encoding never said
+> where a container goes.** The status above was written against the server. Putting `warp-files` on
+> a phone found the other half, and it is two separate holes rather than one.
+>
+> - **`container(name)` was `name === "rows" ? rowsEl : menuEl`.** Every name that was not `"rows"`
+>   landed in the hold-menu. Both previous clients were flat, so the only other name that had ever
+>   existed was `menu:<key>` and the wrong branch was accidentally the right one. A delta naming
+>   `col:/tmp/foo/` as its parent rendered *into the menu*, silently and with no error anywhere.
+>   Containers are real now: created on demand, keyed by name, removed when the last child leaves.
+> - **Nothing on the wire said where a container GOES**, and no client could have worked it out.
+>   `after` orders siblings *within* one container and says nothing across them, and `%diff` emits
+>   within a priority band in **reverse layout order** — so the rightmost column's rows arrive first
+>   and first-appearance ordering draws Miller columns right to left. Rule 4 already answers this
+>   for a node ("park it rather than invent a position"); the same obligation one level up needs the
+>   server to speak. So a frame carries **`cs`** — the app's containers, in that consumer's layout
+>   order, as *state* rather than as an event, present only when the app names containers of its
+>   own. A flat client's frame is byte for byte what it was, which is how `t/nochange.lisp` stayed
+>   identical across this whole change.
+>
+> The honest reading of `cs` is that **`p-extent` was one field short for a nesting encoding.** The
+> DOM's positional claim is `(container . after)`, and a container is a thing whose own position is
+> undeclared. Putting it on every delta would repeat ~30 bytes per row; putting it on the frame
+> costs it once per pass and supersedes by nature, which is what this protocol does with state
+> everywhere else.
+>
+> And one bug underneath both, which no flat client could have hit: **the DOM's key round-trip was
+> string-only.** `delta-json` ships `(princ-to-string (p-key p))` because JSON has no conses, and
+> `%visible-by-key` compared what came back with `equal` against the key *object*. A pubkey prints
+> as itself so client one never noticed; client two's key is `(column . entry)`, so every tap and
+> every hold in the file browser resolved to `NIL` and did nothing — on a surface that otherwise
+> looked completely correct. The comparison is made in the wire's unit now, which puts a constraint
+> back on rule 1: **a key must print distinguishably**, or this encoding will merge two of them.
+
 ## Consumer-negotiated slices
 
 The first draft of this section said **an agent can renegotiate its own viewport; a human cannot** —
@@ -844,6 +877,43 @@ unit, so per-column offsets would need a slot core does not have.
 `warp-files` depends on `warp` **and warren**, which drags gesso, glass, scribe and pigment — fine
 for an optional client system, and the reason `:warp` itself still depends on bordeaux-threads and
 nothing else, with `t/core.lisp` still the standing proof.
+
+> **Status: on the phone, beside the device manager, on the one channel there is.** `warp-files`
+> was gate-tested and served to nobody. It is now the second app on stream 102, and the shape of
+> that answer was forced by a constraint outside warp entirely.
+>
+> **A second channel was not available, and the reason is worth stating because it inverts the
+> obvious ranking.** A channel per app is simpler than a projection id on paper. But every data
+> channel in this system is created before the offer — signalling is one-shot and non-trickle and
+> nothing renegotiates — so channels are made in `shell.js`, which is **published to nsite**. A
+> fifth channel is therefore a new tag, every login link minted against the old one dead, and a
+> desktop restart for `LOGIN_URL_BASE`. A projection id is a file copy and a gateway restart. So:
+> **a client message may carry `a`, the app it is for, and a frame carries `a` back — and the device
+> manager is the app with no name.** Absent routes to it, its frames go back unlabelled, and a phone
+> holding an older payload asks for one app and gets exactly the bytes it always got.
+>
+> That is also what a third app wants. Stream ids are a fixed resource negotiated once; app ids are
+> not.
+>
+> Three things it cost that the plan did not have a line for:
+>
+> - **The multiplex belongs to the channel, not to the gateway.** It went into `warp-dom`
+>   (`make-mux` / `mux-receive` / `message-app`), where a fake transport can drive it, because the
+>   gateway is a thing we may not run. What that bought is measurable: `gateway-nostr.lisp` gained
+>   **zero lines** — its state for this channel was already an opaque value handed back to
+>   `warp-close`, and it is now a link with a mux in it.
+> - **An app must be able to fail to load without taking the box with it.** `warp-files` depends on
+>   warren, which drags gesso, scribe and pigment. So it loads at the first message *naming* it,
+>   never at start, never at all with `WARP_FILES` unset — and a failed load is *remembered*, since
+>   retrying a half-second of ASDF per message is its own outage. An app this box does not serve is
+>   **dropped**, never quietly given the default one.
+> - **Where it opens is a default and deliberately not a confinement.** The desktop next door has a
+>   terminal in its root menu, so a credential that reaches this panel already reaches a shell, and
+>   a root-confined browser beside an unconfined shell protects nobody while looking as though it
+>   does. What the default is *for* is that `/` is useless to open at. It is `$HOME` — the answer
+>   warren's pixel browser already gives, which is rule 9's two facets of one app agreeing about
+>   something small — overridable with `WARP_FILES_ROOT`. `*writable-root*` is unchanged and still
+>   enforced: deleting is a different question from looking.
 
 > **What warren's model did and did not give up.** `fs.lisp` is genuinely a model — listing,
 > sorting, sizing, kind-labelling and image decoding, with no drawing — and it projected without a

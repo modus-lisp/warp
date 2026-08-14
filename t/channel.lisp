@@ -339,6 +339,82 @@ that indexed the list would be asserting the emitter's internals instead of the 
   (ok "the thread is gone" (null (warp-dom::channel-thread *timed*))))
 
 ;;; ===================================================================================
+(format t "~&== several projections over one link: the mux, and the app with no name ==~%")
+;;; ===================================================================================
+;;; A phone gets ONE negotiated data channel and two apps to show on it.  Everything about routing
+;;; between them is here rather than in the gateway, for the reason this whole file exists: the
+;;; gateway may not be run, so what runs there has to be what a fake transport can drive.
+;;;
+;;; The claim under test is narrow and is the one that matters for a deployment: THE DEFAULT APP IS
+;;; UNCHANGED.  A message with no `a` routes to it, its frames go back with no `a` on them, and a
+;;; client that has never heard of any of this cannot tell the difference.
+
+(wire-reset)
+(defvar *second-queries* 0)
+(defvar *second-proj*
+  (make-projection (lambda ()
+                     (incf *second-queries*)
+                     (list (make-instance 'warp-monitor::stat :name "one" :value "1" :trend :ok)
+                           (make-instance 'warp-monitor::stat :name "two" :value "2" :trend :ok)))
+                   :type-fn #'warp-monitor:row-type))
+
+(defvar *opened* '())
+(defvar *mux*
+  (make-mux (lambda (app)
+              (push app *opened*)
+              (cond
+                ((null app) (open-channel *proj* :send #'wire-send :view *view* :rows 14
+                                                 :budget 100000 :invoker :allowlist :hz nil))
+                ((equal app "stats")
+                 (open-channel *second-proj* :send #'wire-send :view *view* :rows 14
+                                             :budget 100000 :invoker :device :hz nil
+                                             :app "stats"))
+                (t nil)))))                 ; an app this host does not serve
+
+(ok "MESSAGE-APP reads the label off a client message, and NIL means the default"
+    (and (null (message-app "{\"t\":\"viewport\",\"rows\":9}"))
+         (equal "stats" (message-app "{\"t\":\"viewport\",\"rows\":9,\"a\":\"stats\"}"))
+         (null (message-app "{\"t\":\"viewport\",\"a\":\"\"}"))
+         (null (message-app "]]] not json at all"))))
+
+(defvar *ch-a* (mux-receive *mux* "{\"t\":\"viewport\",\"rows\":6,\"scroll\":0}"))
+(defvar *ch-b* (mux-receive *mux* "{\"t\":\"viewport\",\"rows\":6,\"scroll\":0,\"a\":\"stats\"}"))
+(ok "the first message naming an app is what opens it, and only once"
+    (and *ch-a* *ch-b* (not (eq *ch-a* *ch-b*))))
+(mux-receive *mux* "{\"t\":\"viewport\",\"rows\":7,\"scroll\":0,\"a\":\"stats\"}")
+(ok "a second message on the same app reuses the channel rather than opening another"
+    (and (= 2 (length (mux-channels *mux*))) (equal '(nil "stats") (mux-apps *mux*))))
+(ok "and it reached that app's consumer, not the other one's"
+    (and (= 6 (dom-rows (channel-consumer *ch-a*)))
+         (= 7 (dom-rows (channel-consumer *ch-b*)))))
+
+(ok "an app this host does not serve is DROPPED — not silently given the default"
+    (null (mux-receive *mux* "{\"t\":\"viewport\",\"rows\":3,\"a\":\"nope\"}")))
+(let ((n (length *opened*)))
+  (mux-receive *mux* "{\"t\":\"viewport\",\"rows\":3,\"a\":\"nope\"}")
+  (ok "and asking again costs one answer, not one open attempt per message"
+      (= n (length *opened*))))
+
+(channel-tick *ch-a*)
+(channel-tick *ch-b*)
+(let* ((frames (wire-frames))
+       (plain (remove-if (lambda (f) (search "\"a\":" f)) frames))
+       (labelled (remove-if-not (lambda (f) (search "\"a\":\"stats\"" f)) frames)))
+  (ok "the default app's frames carry NO label — the bytes it sent before any of this existed"
+      (and plain (every (lambda (f) (eql 0 (search "{\"gen\":" f))) plain)))
+  (ok "and the second app's carry one, which is how a client with two panels tells them apart"
+      (and labelled (= (length frames) (+ (length plain) (length labelled)))))
+  (ok "two apps, two queries, and neither ran the other's"
+      (and (plusp *queries*) (= 1 *second-queries*))))
+
+(mux-close *mux*)
+(ok "closing the mux closed every channel on it"
+    (and (consumer-stop (channel-consumer *ch-a*)) (consumer-stop (channel-consumer *ch-b*))))
+(ok "and it is safe twice, because it runs on an unwind path" (null (mux-close *mux*)))
+(ok "the closed channels are still readable, so a host can log what the session did"
+    (= 2 (length (mux-channels *mux*))))
+
+;;; ===================================================================================
 (format t "~&== and the encoding is still the one that never learned what a socket is ==~%")
 ;;; ===================================================================================
 

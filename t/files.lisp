@@ -295,6 +295,50 @@
           (b (p-extent (first (consumer-visible *browser*)))))
       (and (rect-p a) (not (rect-p b)))))
 
+(format t "~&== the containers, which are the one thing a delta cannot say ==~%")
+;;; `in` NAMES a container and nothing on the wire says where that container GOES.  For a flat
+;;; client it never mattered — its one container is the host's rows element — and for Miller columns
+;;; it decides whether they read left to right or right to left, because EMIT orders a priority band
+;;; in REVERSE layout order.  So the frame states them, in layout order, as state.
+(let* ((cs (warp-dom:app-containers *browser*))
+       (cols (mapcar (lambda (cell) (warp-files-dom:column-container (car cell)))
+                     (warp-files:columns-of (projection-objects *proj*)))))
+  (format t "     cs: ~{~a~^  ~}~%" cs)
+  (ok "the frame carries the app's containers, and they are the open columns"
+      (equal cols (remove "preview" cs :test #'string=)))
+  (ok "in LAYOUT order — which is not the order the deltas arrive in"
+      (let* ((keys (mapcar (lambda (d) (warp-dom:dom-container d))
+                           (consumer-visible *browser*)))
+             (first-seen (remove-duplicates (remove-if-not #'stringp keys)
+                                            :test #'string= :from-end t)))
+        (equal cs first-seen)))
+  ;; diffed against an EMPTY delivered table, so this is what a full first fill would send without
+  ;; disturbing the stream this consumer actually holds
+  (let* ((all (warp::%diff *browser* (make-hash-table :test 'equal) (consumer-visible *browser*)))
+         (full (warp-dom::frame-for *browser* all)))
+    (ok "it is on the FRAME and not on every delta, because it is a fact about the pass"
+        (and (search "\"cs\":[" full)
+             (> (length all) 4)
+             (notany (lambda (d) (search "\"cs\"" (warp-dom:delta-json d))) all))))
+  (ok "and the encoding's own two containers are NOT in it — the host owns an element for each"
+      (and (notany (lambda (n) (string= n "rows")) cs)
+           (notany (lambda (n) (eql 0 (search "menu:" n))) cs))))
+;; the same claim from the other side: a hold puts a menu container on the wire and `cs` ignores it
+(warp:on-gesture *browser* :hold (find 'warp-files:fs-file (consumer-visible *browser*) :key #'p-type))
+(tick *browser*)
+(let ((cs (warp-dom:app-containers *browser*))
+      (containers (mapcar (lambda (p) (car (p-extent p))) (consumer-visible *browser*))))
+  (ok "the menu really is on this pass, in a container of its own"
+      (some (lambda (n) (eql 0 (search "menu:" n))) containers))
+  (ok "and `cs` does not mention it — the host already owns an element for the menu"
+      (notany (lambda (n) (eql 0 (search "menu:" n))) cs)))
+(warp::close-menu *browser*)
+;; and put the two consumers back on the same epoch before the next section.  PULL hands a LAGGING
+;; consumer the cache rather than a fresh read, so a tick here that the framebuffer did not match
+;; would leave it an epoch behind and the section below would be measuring that instead.
+(tick *browser*)
+(tick *pixels*)
+
 ;;; =============================================================================================
 ;;; 4. THE OPAQUE NODE — rule 9, on both encodings at once
 ;;; =============================================================================================

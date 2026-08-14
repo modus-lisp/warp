@@ -46,6 +46,12 @@ testable with no socket in the image, which is how every assertion in t/dom.lisp
    (rows :initarg :rows :initform 12 :accessor dom-rows
          :documentation "How many rows the browser says it can show.  It is the browser's number,
 not ours — see the header's point 4.")
+   (app :initarg :app :initform nil :accessor dom-app
+        :documentation "Which projection this consumer's frames belong to, as a string, or NIL for
+the host's default one.  It is a ROUTING LABEL and nothing else: a link may carry several
+projections — a phone gets exactly one negotiated data channel and two apps to show on it — and the
+client needs to know which of its surfaces a frame is for.  NIL is not a special case at either end,
+it is the absence of a label, and it is what keeps a one-app link's bytes exactly what they were.")
    (last-frame-bytes :initform 0 :accessor dom-last-frame-bytes)
    (sent-bytes :initform 0 :accessor dom-sent-bytes
                :documentation "Total bytes this consumer has actually put on its link.  The budget
@@ -198,15 +204,53 @@ round that just ran a query."
 
 ;;; ---- the encoding: deltas become a frame on somebody's link ------------------
 
+;;; ---- the containers, which are the one thing a delta cannot say -----------------------------
+;;;
+;;; A delta's `in` NAMES a container.  Nothing on the wire says where that container goes, and
+;;; nothing could: `after` orders siblings within one and the reconciler has no idea any of this is
+;;; nested (files/columns.lisp's header).  For the two containers this encoding names itself that
+;;; never mattered — the host owns an element for each — and for an app's own containers it decides
+;;; whether Miller columns read left to right or right to left, because EMIT orders a priority band
+;;; in reverse layout order and the budget may defer any of it to a later pass.
+;;;
+;;; So the frame carries them, in this consumer's layout order, as STATE: every frame that has any
+;;; carries all of them, they supersede by nature, and a client makes its containers match.  It is
+;;; the frame-level twin of rule 4's client obligation — park what you cannot place, never invent a
+;;; position — and it costs nothing at all for a flat app, which names no containers and gets a
+;;; frame byte for byte identical to the one it got before nesting existed.
+
+(defun %own-container-p (name)
+  "T for a container THIS ENCODING named: the rows list, and a hold-menu hanging off a row."
+  (and (stringp name)
+       (or (string= name +rows-container+)
+           (and (>= (length name) 5) (string= "menu:" name :end2 5)))))
+
+(defun app-containers (c)
+  "The app's own containers, in this consumer's layout order, without duplicates."
+  (let ((out '()))
+    (dolist (p (consumer-visible c) (nreverse out))
+      (let ((n (car (p-extent p))))
+        (unless (or (%own-container-p n) (not (stringp n)) (member n out :test #'string=))
+          (push n out))))))
+
 (defun frame-for (c deltas)
   "One pass, as one JSON message.
 
 GEN is rule 4's generation marker: a client must discard anything older than the newest snapshot it
 has seen, and putting it on the frame rather than on every delta is the one place we spend the wire
-on structure instead of content — a snapshot's chunks all carry it and it is per-pass by nature."
-  (format nil "{\"gen\":~d,\"deltas\":[~{~a~^,~}]}"
-          (ds-generation (consumer-stream c))
-          (mapcar #'delta-json deltas)))
+on structure instead of content — a snapshot's chunks all carry it and it is per-pass by nature.
+
+A is this consumer's projection, present only when the host said there was more than one.  CS is the
+app's containers in layout order, present only when the app has any.  Both are absent for every
+client that existed before nesting did, which is the property that makes this a widening rather than
+a change."
+  (let ((app (dom-app c))
+        (cs (app-containers c)))
+    (format nil "{\"gen\":~d~@[,\"a\":~a~]~@[,\"cs\":[~{~a~^,~}]~],\"deltas\":[~{~a~^,~}]}"
+            (ds-generation (consumer-stream c))
+            (and app (to-json app))
+            (and cs (mapcar #'to-json cs))
+            (mapcar #'delta-json deltas))))
 
 (defmethod apply-deltas ((c dom-consumer) deltas)
   (let* ((frame (frame-for c deltas))
@@ -243,7 +287,25 @@ and the only way to read a sink-less consumer."
 ;;; a menu-item.  That is the same decomposition glass makes, and it is why no new verb was needed.
 
 (defun %visible-by-key (c key)
-  (find key (consumer-visible c) :key #'p-key :test #'equal))
+  "The visible presentation a client named, by the key AS THE CLIENT HOLDS IT.
+
+THE WIRE'S KEY IS A STRING, and this is where that stops being a detail.  DELTA-JSON ships
+(princ-to-string (p-key p)) because JSON has no conses, so a client can only ever send that string
+back — and a key that was not a string in the first place will never be EQUAL to it.  Client one
+never noticed: its key is a pubkey, which prints as itself.  Client two's key is (column . entry),
+so with a straight EQUAL every tap and every hold in the file browser resolved to NIL and did
+nothing at all, silently and on a surface that otherwise looked completely correct.
+
+So the comparison is made in the unit the wire uses, which is the encoding's own doing to undo.  It
+is a strict widening — a string key prints as itself — and it costs one PRINC-TO-STRING per visible
+row per message, on messages a finger produces.
+
+Two keys that PRINT alike would collide here where the reconciler keeps them apart.  Rule 1 says
+identity is declared per type, so that is a constraint this encoding places on a key function: a key
+must print distinguishably.  Pathnames, pubkeys and conses of them do."
+  (find key (consumer-visible c)
+        :key (lambda (p) (princ-to-string (p-key p)))
+        :test #'equal))
 
 (defun on-message (c text)
   "Apply one client message.  Returns (values kind detail) for a caller that wants to log it.

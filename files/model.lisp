@@ -82,7 +82,33 @@ shared rather than per consumer.")
    (lock :initform (bt:make-lock "warp-files-browser") :reader browser-lock))
   (:documentation "Where the browser has navigated to, and what it has already decoded."))
 
-(defun make-browser (root)
+;;; ---- where it opens ---------------------------------------------------------------------------
+;;;
+;;; A DEFAULT, AND DELIBERATELY NOT A CONFINEMENT.  Nothing below stops a caller browsing anywhere
+;;; the process can read, and pretending otherwise would be theatre: the desktop this ships beside
+;;; puts a terminal in its root menu, so a credential that reaches the file browser already reaches
+;;; a shell, and a root-confined browser next to an unconfined shell protects nobody while looking
+;;; as though it does.  (The one thing that IS enforced is *WRITABLE-ROOT*, below, because deleting
+;;; is a different question from looking.)
+;;;
+;;; So the only question this answers is where it is useful to OPEN, and the answer is the one
+;;; warren already gives: `/` is a list of system directories nobody wants, and HOME is where a
+;;; person's files are.  warren's own APP defaults to (USER-HOMEDIR-PATHNAME); the pixel facet and
+;;; the data facet of one app opening in the same place is rule 9 being true in a small way rather
+;;; than an argued one.  WARP_FILES_ROOT overrides it, because the box that serves this may want a
+;;; particular tree and editing Lisp to say so is not a deployment step anybody should need.
+
+(defun default-root ()
+  "Where a browser opens when nobody says: $WARP_FILES_ROOT if it names a readable directory, and
+HOME otherwise.  An unusable value falls back rather than signalling — this is a default, and a
+gateway that refused to serve the file browser because an environment variable had a typo in it
+would be answering the wrong question."
+  (let ((env (uiop:getenv "WARP_FILES_ROOT")))
+    (or (and env (plusp (length env))
+             (ignore-errors (truename (uiop:ensure-directory-pathname env))))
+        (user-homedir-pathname))))
+
+(defun make-browser (&optional (root (default-root)))
   (let ((r (truename root)))
     (make-instance 'browser :root r :stack (list r))))
 

@@ -8,7 +8,7 @@
   (:use #:cl #:warp)
   (:export
    ;; the shared navigation state — the column STACK, which is the query's argument
-   #:browser #:make-browser #:browser-root #:browser-stack #:browser-depth
+   #:browser #:make-browser #:default-root #:browser-root #:browser-stack #:browser-depth
    #:browse-open #:browse-close #:browse-rows #:browse-projection #:row-type
    #:*writable-root*
    ;; the domain
