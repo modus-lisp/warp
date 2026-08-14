@@ -496,6 +496,107 @@ The gateway currently hides this by evaluating `(> exp (%unix-now))` at call tim
 means the *view* has no way to learn that a row lapsed. When differential dataflow slides underneath,
 "time is just another input relation" is exactly how it wants this modelled.
 
+## Rule 9 — an app is a bundle of facets, and the consumer chooses
+
+Everything above treats a projection as one thing rendered several ways. That is too small. What an
+application actually publishes is a **bundle of optional facets**, and a consumer takes whichever it
+can use:
+
+| facet | what a consumer does with it |
+|---|---|
+| **data** | queries it — rows, types, commands, `as-of`, cost |
+| **DOM** | renders it — a real browser, or weft in-image |
+| **pixels** | blits it |
+
+**All three are optional.** A terminal offers pixels, and perhaps a little data (its cwd, its
+process). cortez offers pixels and nothing else — a Lisp machine's screen is a bit array and always
+will be. The device manager offers data, from which the other two are made.
+
+### The facets are not peers: some are derivable and one is terminal
+
+    data ──present──▶ DOM ──weft──▶ pixels
+    data ─────────present + paint─▶ pixels
+    pixels ──────────────────────▶ (nothing)
+
+`present`'s default method is a MOP slot walk, so **data yields a DOM for free** — any type in the
+image is browsable with no UI code. weft turns a DOM into pixels, so an app that only speaks DOM is
+never blocked from appearing on a desktop. But **nothing is derivable from pixels.** That asymmetry
+is the whole of this rule, and it explains a thing we kept rediscovering: a surface app is invisible
+to an agent not because agents are poorly served but because there is genuinely nothing there to
+serve.
+
+So the author's rule is one line:
+
+> **Offer the highest facet you can afford, because everything below it can be manufactured and
+> nothing above it can.**
+
+### The consumer chooses, by capability and by budget
+
+This generalises "Consumer-negotiated slices" below from *how much* travels to *in what form*. A
+browser takes DOM if offered and pixels otherwise. An agent takes data if offered, DOM if not (cheap
+to tokenise), and for pixels gets only what the app **supplied**. A VNC viewer takes pixels, always.
+
+Two axes, and conflating them is what made "DOM versus VP8" sound like a choice when it is not:
+
+    projection ──encoding──▶ pixels ──transport──▶ VNC · VP8/WebRTC
+                           ──encoding──▶ DOM    ──transport──▶ data channel
+                           ──encoding──▶ tokens ──transport──▶ an agent
+
+VNC and VP8 are **transports of the pixel facet**, not alternatives to DOM.
+
+### Opaque nodes, and the caption that cannot be derived
+
+A node inside a data tree may offer only pixels: loom's page, cortez's screen, a video. The tree
+around it stays structured — chrome, tabs, titles, commands — and only that node is a hole.
+
+Such a node **must carry a caption**, because a consumer that cannot blit has no other way to know
+what it is, and no amount of cleverness extracts "showing news.ycombinator.com" from a macroblock.
+That is not a workaround for agents; it is the app saying what the region *is* while each consumer
+takes what it can use. An opaque node's `:moved` is exactly the surface `copy-p` it already had.
+
+### The desktop is a projection too
+
+Windows are objects with keys, titles, positions and z-order; a session is a projection of them; a
+seat is a consumer; and a window's content is either a nested projection or an opaque node. `glass`
+is then what its README already claims — a framebuffer and an RFB server — with the window manager
+living where a window manager belongs.
+
+**Sequence this last.** It depends on two things that are unproven at app scale (nesting with
+independent diff scopes, and opaque nodes), and being wrong about them in an app costs a day while
+being wrong about them in the session costs the screen.
+
+### Deliberately not doing
+
+- **Not requiring every app to offer every facet.** Pixels-only is a legitimate app, and saying so
+  is what keeps this a bundle rather than a framework tax.
+- **Not deriving captions from pixels.** Guessing produces a plausible caption for the wrong thing,
+  which is worse than the honest absence of one.
+- **Not putting weft in core.** `:warp` depends on `bordeaux-threads` and nothing else; weft drags
+  in shuttle, gesso, scribe, pigment and stencil. `warp-weft` is an optional system, the way
+  `:glass/nostr` is.
+- **Not making the DOM facet mandatory for pixels.** A hand-written `paint` stays available and stays
+  faster; weft is the *default*, the way the MOP walk is the default `present`. Specialize to
+  design, specialize for precision — the same rule one layer down.
+
+### What it costs, honestly
+
+**weft has no incremental relayout.** loom's shell calls `render-page` and marks dirty; glass's tile
+diff extracts the damage afterwards. So the weft path re-renders a fragment and lets the diff find
+what moved. The **wire** stays efficient — only changed tiles ship, which is the scarce resource —
+but the *paint* does not, and warp-glass's invariant ("a pass paints only the extents the stream
+emitted, so the tiles glass finds dirty are exactly those extents") is lost on that path, and with it
+a free oracle. Rule 3's macroblock snapping likewise applies only to the hand-painted path, since
+weft lays out by CSS.
+
+Accepted deliberately: **weft is functional and can be made faster later.** Recorded here so that
+when someone measures it, they find the trade already named rather than a regression.
+
+Still open, and each one is a real question rather than an omission: **binary payloads** (the DOM
+wire is JSON cells and cannot yet say "this is a picture"), **input into an opaque node** (rule 5's
+gesture enum is closed and deliberately semantic, while a pixel region wants raw keys and
+coordinates — an escape hatch that needs stating carefully or it becomes a hole), and **nesting with
+independent diff scopes**, which no client has yet exercised because both are flat lists.
+
 ## Consumer-negotiated slices
 
 The first draft of this section said **an agent can renegotiate its own viewport; a human cannot** —
