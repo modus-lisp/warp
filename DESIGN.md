@@ -576,6 +576,31 @@ Two axes, and conflating them is what made "DOM versus VP8" sound like a choice 
 
 VNC and VP8 are **transports of the pixel facet**, not alternatives to DOM.
 
+> **Status: "by capability and by budget" is one axis short, and the bundle is not advertised.**
+> Both were found by putting the two apps behind one menu on the phone (glass-webrtc RUNBOOK §7.2),
+> and both are narrow.
+>
+> **A consumer with a person in it also chooses by INTENT.** The phone can blit *and* render DOM,
+> and its budget covers either, so neither of this section's two axes decides anything between
+> `warp-files`' Miller columns and warren's pixel browser — and the rule that they are not ranked
+> means nothing else does either. A surface that picks for the user is the consumer choosing the
+> encoder on the user's behalf, which is this rule inverted. What the menu does instead is offer
+> **one entry per facet, named**, so the pick *is* the intent; it explicitly does not offer a "best
+> available" entry, because an entry that means the columns today and the pixels tomorrow is one
+> nobody can learn. Where capability and budget merely *permit* several facets, something has to
+> say which one was wanted, and only a person can.
+>
+> **Nothing on the wire says which facets — or which apps — exist.** "The consumer chooses" is
+> silent on how a consumer learns what it is choosing between, and there is no message for it: a
+> host that does not serve an app returns `NIL` from its registry and the mux drops the message, so
+> the answer is *silence*, which is indistinguishable from a slow link. That is the right refusal —
+> see rule 6 — but it is not an answer to "what is on offer", and the phone's menu has to learn by
+> asking, once per app, and remembering. Deliberately not fixed by a `hello` that enumerates the
+> bundle: **asking costs whatever the app costs to load** (`:warp-files` drags warren → gesso,
+> scribe, pigment into the image at first mention), so an enumeration is either a lie about what
+> would load or a reason to load everything. Recorded as the honest shape of the gap rather than
+> designed around.
+
 ### Opaque nodes, and the caption that cannot be derived
 
 A node inside a data tree may offer only pixels: loom's page, cortez's screen, a video. The tree
