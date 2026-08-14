@@ -69,6 +69,38 @@ Keys are scoped to the parent, so **re-parenting reads as `gone` + `appeared`, n
 deliberate choice, recorded here so nobody later "fixes" it. `:moved` is for a subtree that
 translated within its parent, which is the case the transport can make cheap.
 
+> **What met the code: "reconcile matches on `(parent, key)`" was never true.** Client two went
+> looking for the parent-scoping this rule opens with, on the understanding that the reconciler had
+> it and no flat client had used it. It does not have it. `%diff` holds **one** `delivered` table,
+> keyed by `p-key` and by nothing else, and there is no parent anywhere in the reconciler.
+>
+> Three things looked like the feature and all three are something else:
+>
+> - **`p-children` is dead.** It is a slot on `presentation`, it is exported, and it is read by no
+>   line of code in warp, warp-glass, warp-dom, the monitor, or any test. A projection that put its
+>   nesting where the slot's name says to put it would ship its roots and silently drop every
+>   descendant. Asserted now, in `t/files.lisp`, so it stops looking like a feature.
+> - **`presentation-key`'s signature is `(type object)`** — a key function *cannot see the parent*.
+>   "The default key is a per-type key function" and "keys are scoped to the parent" cannot both be
+>   satisfied by the key function alone, and the second one loses.
+> - **the DOM's `(parent . after)` is in `p-extent`**, which is *position*, not identity. Its own
+>   comment calls it "rule 1's keys-are-scoped-to-the-parent written as data" and that is a
+>   different claim: two nodes in different containers with the same key still collide in
+>   `delivered`, whatever their extents say.
+>
+> The fix client two used needs no change to core: **give the object its parent and cons the two
+> together in the key function** — `fs-row` is an entry plus the column it is in, and the key is
+> `(column-path . entry-path)`. Scoping happens where rule 1 says identity is declared. It works,
+> and the honest reading of *why* is in rule 9's status below: it is sufficient for correctness and
+> it is not a diff scope.
+>
+> The observable case is smaller than it sounds and it is not contrived. A column **header**'s own
+> key component is the constant `:head`, identical in every column; only the parent separates them.
+> Entry rows happen not to need it, because a full pathname is already globally unique — so on a
+> filesystem the scoping is belt-and-braces for the rows and load-bearing for everything else.
+> Change the entry component to the display name, which is what a display-first implementation
+> reaches for, and two columns holding a `shared.txt` collide immediately.
+
 ## Rule 2 — `moved` is a delta kind
 
 Fixed extents bound the cost of a *mutation*. They do nothing for **scroll**, which translates every
@@ -597,6 +629,44 @@ gesture enum is closed and deliberately semantic, while a pixel region wants raw
 coordinates — an escape hatch that needs stating carefully or it becomes a hole), and **nesting with
 independent diff scopes**, which no client has yet exercised because both are flat lists.
 
+> **Status: two of those three have now met a client, and the answers differ.**
+>
+> **The opaque node works, and the caption is the whole of why.** A file browser's image preview is
+> presented as caption + dimensions + an `opaque` tag and *nothing else* — the decoded pixels live
+> on the domain object, never in the fingerprint. So the framebuffer reaches through `p-object` and
+> blits, the DOM receives a 168-byte JSON delta carrying `"swatch.png — PNG file, 320 x 200"`, and
+> neither encoding has a special case in it. The consumer that cannot blit knows what the region is
+> because **the app said so**, which is exactly the claim, and no binary channel was needed to get
+> there. Its `:moved` is the surface `copy-p` it was promised to be: shifting the pane one column
+> costs **1 unit** against the **154 macroblocks** a re-send would cost.
+>
+> The thing worth writing down is a slot discipline, not a mechanism: **what travels is the
+> fingerprint, so the pixels must not be in it.** Put them there and every consumer is charged for
+> a payload only one of them can use, and the DOM's budget is spent on bytes it will discard.
+>
+> **Nesting works, and the phrase "independent diff scopes" does not describe what makes it work.**
+> Miller columns over a filesystem give the numbers this section wanted:
+>
+> | event | deltas | in the changed column | in the other column |
+> |---|---|---|---|
+> | one file's content changes | **1** (`:changed`) | 1 | **0** |
+> | a file is inserted at the top of a column | **5** (1 `appeared`, 3 `moved`, 1 `changed`) | 5 | **0** |
+> | the same, in the *other* column | **5** | 5 | **0** |
+>
+> A change to one row is scoped to that row; a change in one column does not re-send the others.
+> But it holds for a **different reason than this document implies**. There is exactly one diff,
+> over one flat table, and "the column was not re-sent" is true because **no column-shaped thing
+> exists that could have been re-sent** — not because a sub-diff was skipped. Cost is
+> O(all rows in all columns) per pass either way.
+>
+> That is a cheaper result than the rule advertises, and a genuinely useful one: flat-with-
+> composite-keys gets nesting for free and needs no reconciler change. What it does **not** get is
+> the thing this rule wants before it projects the desktop — a subtree that can be diffed,
+> budgeted, or **resynced** without touching its siblings. `resync` clears the one `delivered`
+> table and re-announces everything; a window's contents cannot be resynced without re-diffing the
+> session. So the sequencing advice stands, but the hazard is not "nesting might not work". It is:
+> **the reconciler has one scope, and a session wants one per window.**
+
 ## Consumer-negotiated slices
 
 The first draft of this section said **an agent can renegotiate its own viewport; a human cannot** —
@@ -725,12 +795,85 @@ check.
 >   that did not would have fallen through to the next branch — which is the RFB stream, and would
 >   have handed a desktop a JSON object as input.
 
+## Client two: the file browser
+
+Client one and the monitor are both **flat lists with no pixels**, so between them they left rule 9's
+two named unknowns untested. A Miller-column file browser is the smallest thing that tests both at
+once, and it costs nothing to source: [warren](../warren) is a working pixel file browser whose
+`fs.lisp` is 198 lines of model with **no drawing in it at all**. `warp-files` projects that model.
+warren is not modified, not ported, and not replaced — it keeps running, and the two are the *pixel*
+and *data* facets of one app, which is rule 9 stated rather than argued.
+
+- keyed identity — the pathname, parent-scoped; `eq` provably fails **harder** than for enrolments,
+  because `list-dir` conses fresh `entry` structs on every read and no two reads share one
+- query-shaped subscription — *the entries of the open columns*, re-read every epoch
+- nesting — three columns, with the delta-scoping numbers in the rule 9 status above
+- an opaque node — an image preview, blitted by one consumer and captioned for the other
+- `tap` → drill-in / peek (safe defaults); `hold` → delete (destructive, confirmed, owner-only)
+- authorization at invocation — a guest is not offered `delete`, and is refused when it names it
+- view state — selection, scroll, **and which column has focus**, the third piece a flat list had
+  no room for
+
+**Three things it cost that the plan did not have a line for**, all of them in the same place: the
+boundary between what is shared and what is the looker's.
+
+- **The column stack is the query's argument, so it is shared — and therefore the safe default
+  mutates shared state.** Rule 8's examples are all about *how* a seat looks at fixed data, so the
+  obvious reading is that "where I have navigated to" is view state like scroll. It is not: a second
+  column stack returns different rows, which is definitionally a second projection. So two consumers
+  over one browser drill in **together**, and `open` — a non-destructive tap default — writes state
+  its neighbour is reading. That is not a wart, it is the same shape as `revoke` writing the
+  enrolment file every consumer reads. It is what "reads are projections, writes are commands" means
+  when the write happens to be a navigation, and it is worth stating because the alternative reading
+  is defensible right up until you implement it.
+- **The preview splits the other way, on the same line.** *Whether* there is a preview depends on
+  this consumer's selection, so the node is built in `lay-out`. *What the decoded pixels are* is a
+  property of the file, so the decode is cached on the shared half. Paying for a decode per consumer
+  would be the mixer bug in a slower coat.
+- **A lagging consumer is handed the cache, not a fresh read.** `pull` re-runs the query only for a
+  consumer whose epoch has *caught up* with the projection's; one that is an epoch behind is brought
+  level against the cached objects and re-queries on its *next* tick. It converges, which is what
+  rule 8 promises, but "a change is visible to every consumer on its next tick" is not true — it is
+  the next tick for whoever was level and the one after for whoever was behind. Nothing to fix;
+  something to know before someone debugs it as a missing delta.
+
+One limit, recorded rather than discovered: **scroll is one offset for the whole browser, not one
+per column.** Rule 7 keeps one scroll slot and `content-height` is what lands the clamp in the right
+unit, so per-column offsets would need a slot core does not have.
+
+`warp-files` depends on `warp` **and warren**, which drags gesso, glass, scribe and pigment — fine
+for an optional client system, and the reason `:warp` itself still depends on bordeaux-threads and
+nothing else, with `t/core.lisp` still the standing proof.
+
+> **What warren's model did and did not give up.** `fs.lisp` is genuinely a model — listing,
+> sorting, sizing, kind-labelling and image decoding, with no drawing — and it projected without a
+> fight. What it does not do is *export* any of it: warren's package exports four symbols (`run`,
+> `render-to-png`, `desktop-surface`, `*show-hidden*`) and every one of the eleven readers and one
+> decoder this client needs is internal. So `warp-files` reaches through `warren::`, in a single
+> labelled block in `model.lisp` so the depth of the reach can be counted rather than sprinkled
+> through four files. The one place it hurts is `entry-size`, which stats the file on every
+> `present`; that is what makes a content change visible as a one-row delta, and it is also N file
+> opens per pass.
+
 ## Extract under load
 
 Layout, theming, pane composition (steal GToolkit's Miller columns), animation: **extract when a
 second client needs them.** Three clients decide whether the core is right — device manager, loom's
 chrome (retiring the flickering immediate-mode code), and the inspector (proving presentations are
 real). Fewer than three and we are guessing.
+
+> **Status: two, and the second one paid.** The device manager and the monitor were both flat lists,
+> so they agreed with each other about everything and could not disagree with the core. The file
+> browser is the first client that is shaped differently, and it immediately found rule 1 claiming a
+> reconciler feature that does not exist and rule 8 silent on where navigation lives. Miller columns
+> did not need stealing — they are `lay-out` plus four generics for the positional claim, ~90 lines
+> — which is itself the evidence for "extract under load": the composition that looked like it
+> wanted a framework turned out to want a method.
+>
+> The third client should be shaped differently again. Both existing ones are read-mostly with a
+> handful of commands; an **inspector** would be the first to make `present`'s MOP default
+> load-bearing, and loom's chrome the first whose content is an opaque node rather than rows around
+> one.
 
 The failure mode is building a framework in the abstract. The presentation concept is tiny; the
 gravity well around it is not.

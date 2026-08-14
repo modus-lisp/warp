@@ -51,3 +51,24 @@ The first practical client was the pipeline monitor (`app/`). **Client one — t
 now runs too**, inside the glass-webrtc gateway, over the enrolment file that gateway writes, with
 the invoker taken from the authenticated Nostr identity: an allowlisted owner is offered `revoke`,
 an enrolled guest is not, and a guest who sends it anyway is refused by `invoke`.
+
+**Client two — a Miller-column file browser (`files/`)** — is the first that is not a flat list. It
+projects [warren](../warren)'s `fs.lisp` (198 lines of filesystem model with no drawing in it);
+warren itself is untouched and still runs, because the two are the *data* and *pixel* facets of one
+app. It is the first client to **nest** and the first to carry an **opaque node** — an image preview
+that one consumer blits and the other receives as the caption the app supplied.
+
+| system | what it adds |
+|---|---|
+| `warp-files` | the projection over warren's model, and the Miller walk (no pixels, no JSON) |
+| `warp-files/glass` | rectangles, painting, and the blit |
+| `warp-files/dom` | one container per column, and a node it is told about but cannot draw |
+
+- `t/files.lisp` — the delta-scoping numbers, `eq` failing across a re-read, the opaque node on both
+  encodings, and a delete refused at invocation that the menu never offered
+- `demo/files-shot.lisp` — real columns of real files, rendered offscreen to a PNG
+
+It also falsified rule 1's opening line: the reconciler does **not** match on `(parent, key)` — it
+holds one flat table keyed by `p-key`, `p-children` is read by nothing, and parent scoping is
+something a key function has to do for itself. See DESIGN.md rules 1 and 9 for what that costs and
+what it does not.
