@@ -6,6 +6,8 @@
 # Everything it writes goes to /tmp.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/.." && pwd)"    # warp itself
+ws="$(cd "$repo/.." && pwd)"      # the workspace warp and its siblings live in
 out="${WARP_BROWSER_OUT:-/tmp/warp-browser}"
 mkdir -p "$out"
 
@@ -13,9 +15,9 @@ port=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print
 echo "== serving on 127.0.0.1:$port =="
 
 # warp's fasls only: the cache is shared with other work in this image
-for d in ~/.cache/common-lisp/*/home/claude/warp; do [ -e "$d" ] && rm -rf "$d"; done
+for d in ~/.cache/common-lisp/*"$repo"; do [ -e "$d" ] && rm -rf "$d"; done
 
-CL_SOURCE_REGISTRY='(:source-registry (:tree "/home/claude/") :inherit-configuration)' \
+CL_SOURCE_REGISTRY="(:source-registry (:tree \"$ws/\") :inherit-configuration)" \
   sbcl --dynamic-space-size 2048 --non-interactive \
        --load "$here/../demo/serve-dom.lisp" "$port" > "$out/server.log" 2>&1 &
 pid=$!

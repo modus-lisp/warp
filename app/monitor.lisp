@@ -78,8 +78,11 @@
 ;;; ---- the data source: files the gateway already writes ----------------------
 
 (defparameter *stats-file* "/tmp/glass-stats.sexp")
+;; webrtc-data is a sibling checkout of warp's, so resolve it from warp's own
+;; root rather than naming an absolute path.
 (defparameter *devices-file*
-  "/home/claude/webrtc-data/demo/glass-webrtc/.glass-devices")
+  (asdf:system-relative-pathname
+   "warp" "../webrtc-data/demo/glass-webrtc/.glass-devices"))
 
 (defun read-stats ()
   (handler-case

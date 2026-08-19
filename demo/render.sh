@@ -4,9 +4,10 @@
 # tinted/outlined by kind (green appeared, red gone, blue moved, amber changed).
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
+ws="$(cd "$here/../.." && pwd)"   # the workspace warp and its siblings live in
 out="${1:-/tmp/warp-demo.mp4}"
 work=$(mktemp -d)
-CL_SOURCE_REGISTRY='(:source-registry (:tree "/home/claude/") :inherit-configuration)' \
+CL_SOURCE_REGISTRY="(:source-registry (:tree \"$ws/\") :inherit-configuration)" \
   sbcl --dynamic-space-size 2048 --non-interactive --load "$here/damage-film.lisp"
 # the rawvideo demuxer wants one stream, not a numbered pattern
 cat $(ls /tmp/warp-film/f*.rgb | sort) > "$work/all.rgb"
