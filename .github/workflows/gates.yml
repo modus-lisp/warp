@@ -29,4 +29,4 @@ jobs:
                --eval '(ql-util:without-prompting (ql:add-to-init-file))'
           sbcl --non-interactive --eval '(ql:quickload (list :bordeaux-threads))'
       - name: Gate
-        run: sbcl --dynamic-space-size 3072 --script inspect/command-gate.lisp
+        run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --load inspect/command-gate.lisp
