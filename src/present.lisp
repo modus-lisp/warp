@@ -16,19 +16,34 @@
   (:documentation "Project OBJECT as TYPE into VIEW.  Returns a list of cells (strings or
 (string . tag) pairs).  The default method is a MOP slot walk."))
 
+;;; Enumerating a class's slots is the MOP's job, and the MOP is not ANSI.  SBCL has SB-MOP; a host
+;;; that does not (modus) must never even READ `sb-mop:', because an absent package is a READER
+;;; error — it happens before load, so no runtime test can guard it.  Hence #+/#- around the whole
+;;; walk rather than a feature check inside it.  On SBCL this is exactly the code that was here.
+#+sbcl
+(defun %slot-cells (object class)
+  (mapcar (lambda (sd)
+            (let ((name (sb-mop:slot-definition-name sd)))
+              (format nil "~(~a~): ~a" name
+                      (if (slot-boundp object name)
+                          (slot-value object name)
+                          "#<unbound>"))))
+          (sb-mop:class-slots class)))
+
+#-sbcl
+(defun %slot-cells (object class)
+  "No MOP here: the default inspector degrades to the class name rather than refusing to load.
+   A host that wants the slots back specializes PRESENT, which is what DESIGN.md asks for anyway."
+  (declare (ignore object class))
+  '())
+
 (defmethod present (object type view)
   "The inspector, as a default: every slot, in definition order.  Legible, not designed — which is
 exactly the trade named in DESIGN.md.  Specialize to design."
   (declare (ignorable type view))
   (let ((class (class-of object)))
     (cons (format nil "~a" (class-name class))
-          (mapcar (lambda (sd)
-                    (let ((name (sb-mop:slot-definition-name sd)))
-                      (format nil "~(~a~): ~a" name
-                              (if (slot-boundp object name)
-                                  (slot-value object name)
-                                  "#<unbound>"))))
-                  (sb-mop:class-slots class)))))
+          (%slot-cells object class))))
 
 ;;; ---- layout ----------------------------------------------------------------
 ;;; A vertical list, which is client one's shape and the shape that exercises the protocol: scrolling

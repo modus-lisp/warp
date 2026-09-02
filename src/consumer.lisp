@@ -91,7 +91,10 @@ landing means is the encoding's business, and only one encoding paints.")
 where.  The alternative — construct it and signal NO-APPLICABLE-METHOD the first time it is owed
 anything — makes a missing encoding look like an intermittent bug in the reconciler, and it is
 reachable only on the pass where a budget happens to let something through."
-  (unless (sb-mop:compute-applicable-methods #'apply-deltas (list c '()))
+  ;; COMPUTE-APPLICABLE-METHODS is ANSI, not MOP: SB-MOP merely re-exports CL's symbol, and the two
+  ;; are EQ.  Spelling it `sb-mop:' cost nothing here and made the file unreadable on a host with no
+  ;; SB-MOP package — a READ error, which is before any runtime test could soften it.
+  (unless (compute-applicable-methods #'apply-deltas (list c '()))
     (error "warp: ~s has no APPLY-DELTAS method, so it has no encoding target and cannot be a~@
             consumer.  Specialise APPLY-DELTAS (and usually LAY-OUT) on it, or use~@
             RECORDING-CONSUMER — see DESIGN.md rule 8."
