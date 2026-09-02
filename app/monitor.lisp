@@ -81,8 +81,10 @@
 ;; webrtc-data is a sibling checkout of warp's, so resolve it from warp's own
 ;; root rather than naming an absolute path.
 (defparameter *devices-file*
-  (asdf:system-relative-pathname
-   "warp" "../webrtc-data/demo/glass-webrtc/.glass-devices"))
+  ;; glass-webrtc is its own repo now, so ask ASDF for it directly rather than walking
+  ;; up out of warp's root into a subdirectory of something else.
+  (or (ignore-errors (asdf:system-relative-pathname "glass-webrtc" ".glass-devices"))
+      (asdf:system-relative-pathname "warp" "../glass-webrtc/.glass-devices")))
 
 (defun read-stats ()
   (handler-case
