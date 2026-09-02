@@ -17,10 +17,14 @@
 (string . tag) pairs).  The default method is a MOP slot walk."))
 
 ;;; Enumerating a class's slots is the MOP's job, and the MOP is not ANSI.  SBCL has SB-MOP; a host
-;;; that does not (modus) must never even READ `sb-mop:', because an absent package is a READER
-;;; error — it happens before load, so no runtime test can guard it.  Hence #+/#- around the whole
-;;; walk rather than a feature check inside it.  On SBCL this is exactly the code that was here.
-#+sbcl
+;;; that does not must never even READ `sb-mop:', because an absent package is a READER error — it
+;;; happens before load, so no runtime test can guard it.  Hence #+/#- around the whole walk rather
+;;; than a feature check inside it.  On SBCL this is exactly the code that was here.
+;;;
+;;; The test is for the SURFACE, not the vendor: modus supplies SB-MOP over its own metaobjects and
+;;; pushes :SB-MOP (it does not claim :SBCL, and should not).  SBCL does not push :SB-MOP, so
+;;; neither feature alone is the question — `(or sbcl sb-mop)' is.
+#+(or sbcl sb-mop)
 (defun %slot-cells (object class)
   (mapcar (lambda (sd)
             (let ((name (sb-mop:slot-definition-name sd)))
@@ -30,7 +34,7 @@
                           "#<unbound>"))))
           (sb-mop:class-slots class)))
 
-#-sbcl
+#-(or sbcl sb-mop)
 (defun %slot-cells (object class)
   "No MOP here: the default inspector degrades to the class name rather than refusing to load.
    A host that wants the slots back specializes PRESENT, which is what DESIGN.md asks for anyway."
