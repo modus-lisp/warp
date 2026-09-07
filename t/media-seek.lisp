@@ -18,7 +18,7 @@
 (dolist (f '("t5-av.webm" "bbb360.webm")) (uiop:copy-file (merge-pathnames f *vectors*) (merge-pathnames f *root*)))
 (dolist (f '("cbr.mp3" "vbr.mp3" "nocue.opus" "nocues.webm"))
   (uiop:copy-file (merge-pathnames f #p"/tmp/warp-media-mp3/") (merge-pathnames f *root*)))
-(dolist (f '("av.mp4" "audio.m4a"))
+(dolist (f '("av.mp4" "audio.m4a" "cabac-av.mp4"))
   (uiop:copy-file (merge-pathnames f *vectors*) (merge-pathnames f *root*)))
 
 (defvar *lib* (warp-media:make-library :root *root*))
@@ -113,23 +113,21 @@
     (ok (format nil "seek to 20 s is 880 Hz (~,0f) and took ~d ms (cache, not a decode)" hz ms)
         (and (< 820 hz 940) (< ms 400)))))
 
-(format t "~&== MP4: cassette demuxes, reed decodes, and a video that quits is not fatal~%")
+(format t "~&== MP4: cassette demuxes, reed decodes, and both tracks play~%")
 ;; av.mp4 is H.264 video + AAC audio, both 440 Hz.  reed's own MP4 reader cannot find the audio
 ;; config on this file because the video track comes first; cassette's demuxer can, which is the
 ;; whole reason this path exists.
 ;;
-;; Its video is H.264 with P slices, which reel does not decode yet, so this file is also the
-;; test for the player's answer to a picture it cannot finish: drop the picture, say so, and keep
-;; the sound running.  Everything below the first assertion is about the audio surviving that.
+;; Its video is inter-coded H.264, so it is also the end-to-end check that P slices and motion
+;; compensation reach the screen and not only the conformance test.
 (play "av.mp4")
-(ok "an MP4 whose video gives up part way still plays" (eq (warp-media:player-state *p*) :playing))
+(ok "an inter-coded MP4 plays" (eq (warp-media:player-state *p*) :playing))
 (ok (format nil "duration ~,2f s is ~~6 s" (or (warp-media:player-duration *p*) 0))
     (let ((d (warp-media:player-duration *p*))) (and d (< 5.9 d 6.2))))
-(first-frames 4)                     ; let the worker reach the P slice
-(ok (format nil "the transport says why the video stopped (~s)" (or (warp-media:player-error *p*) ""))
-    (let ((n (warp-media:player-error *p*)))
-      (and n (search "video stopped" n) (search "P slice" n))))
-(ok "and the state is still PLAYING, not ERROR" (eq (warp-media:player-state *p*) :playing))
+(let ((f (wait-frame)))
+  (ok (format nil "its video decodes rather than stopping at the first P slice (~a)"
+              (if f (list (warp-media:vf-w f) (warp-media:vf-h f)) :no-picture))
+      (and f (warp-media:player-has-video-p *p*) (null (warp-media:player-error *p*)))))
 (first-frames 12)                    ; AAC priming: the first ~0.25 s is encoder delay and warm-up
 (let ((hz (zero-cross-hz (first-frames 12))))
   (ok (format nil "the AAC track really decodes to the 440 Hz tone (~,0f Hz)" hz) (< 400 hz 480)))
@@ -143,6 +141,21 @@
   (ok (format nil "position reads ~,2f s, i.e. 3 s plus what the measurement pulled"
               (warp-media:player-position *p*))
       (<= 2.9 (warp-media:player-position *p*) 3.4)))
+(format t "~&== a picture that cannot be decoded at all still does not stop the sound~%")
+;; cabac-av.mp4 is Main profile: CABAC entropy coding, which this decoder does not do.  It is the
+;; standing test for the player's answer to a picture it cannot start — drop it, say why, and run
+;; the audio to the end — which used to be av.mp4's job before P slices worked.
+(play "cabac-av.mp4")
+(ok "a CABAC MP4 still plays" (eq (warp-media:player-state *p*) :playing))
+(first-frames 8)
+(ok (format nil "the transport says why the video stopped (~s)" (or (warp-media:player-error *p*) ""))
+    (let ((n (warp-media:player-error *p*)))
+      (and n (search "video stopped" n) (search "CABAC" n))))
+(ok "and the state is still PLAYING, not ERROR" (eq (warp-media:player-state *p*) :playing))
+(first-frames 12)
+(ok (format nil "its audio keeps going at 440 Hz (~,0f)" (zero-cross-hz (first-frames 12)))
+    (< 400 (zero-cross-hz (first-frames 12)) 480))
+
 (play "audio.m4a")
 (ok "an audio-only M4A plays too" (eq (warp-media:player-state *p*) :playing))
 (first-frames 12)
