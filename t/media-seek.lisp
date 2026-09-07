@@ -149,8 +149,12 @@
 (ok "a CABAC MP4 still plays" (eq (warp-media:player-state *p*) :playing))
 (first-frames 8)
 (ok (format nil "the transport says why the video stopped (~s)" (or (warp-media:player-error *p*) ""))
+    ;; the REASON is deliberately not pinned down.  As the decoder grows, the first thing a given
+    ;; file trips over changes — this one moved from CABAC to weighted prediction the day CABAC
+    ;; started working — and what this test is about is the player's behaviour, not the decoder's
+    ;; current frontier: a picture that cannot be decoded is dropped, and it says so.
     (let ((n (warp-media:player-error *p*)))
-      (and n (search "video stopped" n) (search "CABAC" n))))
+      (and n (search "video stopped" n) (> (length n) (length "video stopped: ")))))
 (ok "and the state is still PLAYING, not ERROR" (eq (warp-media:player-state *p*) :playing))
 (first-frames 12)
 (ok (format nil "its audio keeps going at 440 Hz (~,0f)" (zero-cross-hz (first-frames 12)))
