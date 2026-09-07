@@ -395,6 +395,11 @@
     (make-video-frame :w w :h h :rgb rgb :no no
                       :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0))))
 
+(defun %audio-gave-up (p gen e)
+  "The audio track would not decode.  Say so where the transport shows it, and play the picture."
+  (with-player (p)
+    (when (%live-p p gen) (setf (player-error p) (format nil "audio stopped: ~a" e)))))
+
 (defun %video-gave-up (p gen e any-frames-p)
   "The video track stopped decoding part way through.  Keep playing the sound.
 
@@ -432,7 +437,11 @@
                          (member (string-downcase (or (pathname-type path) ""))
                                  '("mp4" "m4a") :test #'string=))
                 (or (%pcm-for p path)
-                    (let ((m (ignore-errors (%mp4-aac-mono path))))
+                    ;; NOT ignore-errors.  A file whose sound will not decode is worth saying out
+                    ;; loud: swallowing it here is indistinguishable from a file that has no sound,
+                    ;; and the two want different things from whoever is listening.
+                    (let ((m (handler-case (%mp4-aac-mono path)
+                               (serious-condition (e) (%audio-gave-up p gen e) nil))))
                       (when m (with-player (p) (setf (%pcm-cache p) (cons path m))) m)))))
          (aac-pos (if aac (min (length aac) (floor (* start +rate+))) 0))
          (carry (make-array 0 :element-type '(signed-byte 16)))
