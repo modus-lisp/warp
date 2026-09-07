@@ -71,6 +71,38 @@ that one consumer blits and the other receives as the caption the app supplied.
   encodings, and a delete refused at invocation that the menu never offered
 - `demo/files-shot.lisp` — real columns of real files, rendered offscreen to a PNG
 
+**Client three — a media player (`media/`)** — is the first client whose opaque node *moves*.
+`warp-media` projects a folder of files as Winamp's arrangement: a playlist, a transport that never
+moves, a clock, and the picture. The picture is a rule-9 opaque node whose fingerprint is
+`(caption, size, frame-number)`, so each decoded frame is one `:changed` delta on one extent — the
+framebuffer encoding blits it, everyone else gets "Big Buck Bunny — 640 x 360, frame 812". Decoding
+is [cassette](../cassette) — WebM and MP4, VP8 and H.264 — and reed; sound is one source thunk on glass's session
+mixer, and the mixer's 20 ms clock is what paces the picture (a silent film falls back to the wall
+clock). It is a `:surface` app in the desktop's root menu, not a McCLIM frame.
+
+| system | what it adds |
+|---|---|
+| `warp-media` | the engine (decode threads, two bounded queues, the thunk, the clock), the domain, commands, the layout seam |
+| `warp-media/glass` | the transport and rows painted, the frame scaled into its 512x288 band |
+
+- `t/media.lisp` — a folder of real WebM files, the mixer's clock driven by hand: frame numbers
+  climb with the audio taken, pause is `NIL`, the end of the folder stops, and a framebuffer pass
+  after the clock moves repaints the picture and nothing else
+- MP4 plays too, picture and sound. The video is H.264, which [reel](../reel) decodes bit-exactly
+  for intra-only streams, and the audio is AAC: cassette demuxes the track and reed decodes it.
+  That layering is load-bearing rather than tidy — reed's own MP4 reader looks for a decoder config
+  under the first track it finds, so on a file with video first it finds an `avcC` and reports
+  "no esds AudioSpecificConfig", and an A/V mp4 would not play at all, not even its sound.
+- **A picture that gives up does not take the sound with it.** reel does not decode H.264 P slices
+  yet, so a normal inter-coded MP4 stops producing frames part way through. The player drops the
+  picture, puts the reason where the transport shows it, and runs the audio to the end. That is the
+  difference between a media player and a decoder test, and `t/media-seek.lisp` asserts it.
+- `t/media-seek.lisp` — seeking: WebM to the exact frame (decoding forward from the cue, with a
+  cluster walk for files without Cues), MP3 by a Xing/TOC or CBR index landing on the right sound,
+  Opus from the decoded cache in ~10 ms, a paused seek that stays paused, and the 32-cell seek bar
+  whose cells are ordinary presentations with `seek-to-cell` as their default command
+- `demo/media-run.lisp` — Big Buck Bunny against a live mixer at 60 Hz, with a keeping-up verdict
+
 It also falsified rule 1's opening line: the reconciler does **not** match on `(parent, key)` — it
 holds one flat table keyed by `p-key`, `p-children` is read by nothing, and parent scoping is
 something a key function has to do for itself. See DESIGN.md rules 1 and 9 for what that costs and
