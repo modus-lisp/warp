@@ -447,6 +447,12 @@
          (carry (make-array 0 :element-type '(signed-byte 16)))
          (no 0))
     (declare (type fixnum aac-pos no))
+    ;; a video track the container refused outright — a codec we do not decode, or parameter sets
+    ;; we cannot parse — reports itself the same way one that gives up part way does
+    (let ((note (cassette:player-video-note wp)))
+      (when (and note (null vt))
+        (with-player (p)
+          (when (%live-p p gen) (setf (player-error p) (format nil "video stopped: ~a" note))))))
     (with-player (p) (when (%live-p p gen) (setf (%base p) start)))
     (%go-live p gen :has-video (and vt t) :has-audio (or (and at t) (and aac t))
               :duration (or duration (and aac (/ (length aac) (float +rate+ 1d0)))))

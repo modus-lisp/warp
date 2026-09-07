@@ -18,7 +18,7 @@
 (dolist (f '("t5-av.webm" "bbb360.webm")) (uiop:copy-file (merge-pathnames f *vectors*) (merge-pathnames f *root*)))
 (dolist (f '("cbr.mp3" "vbr.mp3" "nocue.opus" "nocues.webm"))
   (uiop:copy-file (merge-pathnames f #p"/tmp/warp-media-mp3/") (merge-pathnames f *root*)))
-(dolist (f '("av.mp4" "audio.m4a" "cabac-av.mp4"))
+(dolist (f '("av.mp4" "audio.m4a" "deep-av.mp4"))
   (uiop:copy-file (merge-pathnames f *vectors*) (merge-pathnames f *root*)))
 
 (defvar *lib* (warp-media:make-library :root *root*))
@@ -142,11 +142,13 @@
               (warp-media:player-position *p*))
       (<= 2.9 (warp-media:player-position *p*) 3.4)))
 (format t "~&== a picture that cannot be decoded at all still does not stop the sound~%")
-;; cabac-av.mp4 is Main profile: CABAC entropy coding, which this decoder does not do.  It is the
+;; deep-av.mp4 is High 10: ten bits per sample.  This decoder is eight-bit throughout, which is a
+;; deep enough assumption that the file should stay undecodable, and that is what makes it a good
 ;; standing test for the player's answer to a picture it cannot start — drop it, say why, and run
-;; the audio to the end — which used to be av.mp4's job before P slices worked.
-(play "cabac-av.mp4")
-(ok "a CABAC MP4 still plays" (eq (warp-media:player-state *p*) :playing))
+;; the audio to the end.  Its two predecessors in this role both stopped being undecodable: av.mp4
+;; when P slices landed, cabac-av.mp4 when CABAC did.
+(play "deep-av.mp4")
+(ok "a ten-bit MP4 still plays its sound" (eq (warp-media:player-state *p*) :playing))
 (first-frames 8)
 (ok (format nil "the transport says why the video stopped (~s)" (or (warp-media:player-error *p*) ""))
     ;; the REASON is deliberately not pinned down.  As the decoder grows, the first thing a given
