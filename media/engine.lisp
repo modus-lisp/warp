@@ -99,8 +99,17 @@
             (if (%wall-start p) (- (%now) (%wall-start p)) 0d0)))))
 
 (defun player-position (p)
-  "Seconds of the track the listener has reached, clamped to the duration when one is known."
-  (let ((s (with-player (p) (player-clock-seconds p))))
+  "Seconds of the track the listener has reached, clamped to the duration when one is known.
+
+   For a SILENT film this is the picture on screen, not the wall clock.  The wall clock is the
+   right thing to pace *against* — a frame goes up when its timestamp arrives — but the wrong thing
+   to report when the decoder cannot keep up, which H.264 at 640x360 currently cannot.  Reporting it
+   runs the clock and the seek bar off the end while the picture is still in the middle: a number
+   that describes the machine rather than the film.  MAX against the base keeps a frame left over
+   from before a seek from reading as the position after it."
+  (let ((s (with-player (p)
+             (let ((f (and (not (%has-audio p)) (player-frame p))))
+               (if f (max (%base p) (vf-timestamp f)) (player-clock-seconds p))))))
     (if (player-duration p) (min s (player-duration p)) s)))
 
 (defun %wall-run (p) (unless (%wall-start p) (setf (%wall-start p) (%now))))
