@@ -228,6 +228,81 @@ protocol.
 There is no hover, so "pointer over presentation of type T" has nothing to hang on — a second,
 independent reason the refusal of translators is not merely discipline.
 
+## The interaction language is not the wire vocabulary
+
+Rule 5 closes an enum, and that enum has quietly been read as a statement about what a *person*
+may do. It is not. It is a statement about what the *wire* carries, and the two are different
+layers that happen to have been the same size so far because every client has been simple.
+
+> **The wire vocabulary is an architecture decision. The interaction language is a design
+> decision. A closed enum on the first does not close the second.**
+
+The distinction matters because people arrive with expectations formed by iOS, Android, Windows
+and macOS, and those expectations are not decoration — a swipe that does nothing reads as a
+broken app, not as a minimal one. Nothing about warp requires refusing them.
+
+### The decomposition rule
+
+The design already uses this argument once without naming it. Rule 5 says hold-drag-release
+"decomposes into a `hold` plus a `tap` on a menu item, **which is why Rule 5's vocabulary needed
+no new verb**". That generalises, and it is the whole mechanism:
+
+> A familiar interaction is admissible when it decomposes into gestures the wire already has,
+> plus state the client already holds.
+
+Worked, for the ones people will reach for:
+
+| what a person does | how it decomposes | needs |
+|---|---|---|
+| swipe a row to reveal actions | client reveals; the revealed action is a presentation; tapping it is a `tap` | nothing new |
+| swipe-to-delete | as above, onto a `destructive` command — which rule 6 already routes through confirmation | nothing new |
+| pull to refresh | the client asks for a `resync` (rule 4), which is already a delta kind | nothing new |
+| back | the client pops its own navigation state, or taps a `chip` — which is why chips became presentations | nothing new |
+| double-tap | two `tap`s the client coalesces, or a distinct local meaning | nothing new |
+| momentum scrolling | `two-finger`, with the client extrapolating and reporting the viewport it lands on | nothing new |
+| long-press preview | `hold` opens a menu; a peek is a menu whose item is an `opaque` | nothing new |
+
+None of that is a protocol change. All of it is a client that recognises more than it forwards —
+which is exactly what rule 5 already asks for, one step further along.
+
+### Where it genuinely stops
+
+Two shapes do not decompose, and pretending otherwise is how a protocol acquires a coordinate
+channel by accident.
+
+**Continuous manipulation with live feedback.** Drag-to-reorder, pinch-to-zoom, and scrubbing by
+dragging all need the *thing being manipulated* to follow the finger at frame rate. The wire
+carries semantics, not coordinates, and a budgeted delta stream at 4 Hz is not a feedback loop.
+The honest options are: the client animates locally and sends ONE committed message at the end
+(reorder becomes a `cmd` carrying the new position — a picker, not a drag); or the interaction is
+declined. What must not happen is a stream of positional updates, because that is a coordinate
+channel wearing a different word, and §10.5's "there are no coordinates on this wire" is load-
+bearing for every encoding that is not a browser.
+
+**Free-form text.** Tap, hold and two-finger can select from choices; they cannot compose a
+string. Every parameter in warp is enumerable today and the picker (`:values` on a command) made
+that comfortable. A genuinely free-form value — a search box, a rename — has no expression here at
+all, and inventing one is a protocol question rather than a widget question. It is the next thing
+that will force one.
+
+### When they conflict, the vision wins
+
+Familiarity is a real cost to ignore, so this is a rule rather than a preference:
+
+> Where a platform convention and warp's long-term shape conflict, resolve in favour of the
+> long-term shape — and say which convention was declined and why.
+
+The reason is not purity. Many conventions exist *because a widget kit was in-process*: they
+assume a toolkit that can measure text, hit-test pixels, animate at will and lie about latency
+because there is none. Reproduced over a wire, those same conventions become a translator layer,
+which is the thing "The core is a protocol, not a renderer" refuses in its opening paragraph.
+Copying them out of habit is how a delta protocol turns back into a remote widget kit.
+
+The test to apply, when tempted: **does this convention still make sense when the thing drawing
+it is a framebuffer 200 ms away that is told about changes and not about frames?** Hold-drag-release
+passes. Drag-to-reorder does not, and becomes a picker. Hover does not exist at all, which rule 5
+already notes for an unrelated reason and which is the same finding arriving twice.
+
 ## Rule 6 — applicability, and safe defaults
 
 - **`tap` invokes the declared default command for `(type, view)`. `hold` lists applicable ones.**
@@ -957,6 +1032,22 @@ second client needs them.** Three clients decide whether the core is right — d
 chrome (retiring the flickering immediate-mode code), and the inspector (proving presentations are
 real). Fewer than three and we are guessing.
 
+> **Status: FIVE, and the count is the point.** This paragraph said *two* for a long time and the
+> rule it serves — three clients decide whether the core is right — has now been met and passed.
+> What each one cost is the honest record:
+>
+> | client | what it found |
+> |---|---|
+> | monitor / device manager | agreed with each other about everything; two flat lists cannot disagree with the core |
+> | `warp-files` | nesting, and rule 1 claiming a reconciler feature that does not exist |
+> | `warp-media` | the first controls — `button` and `meter` — which sat in one app for months before anyone noticed they were core's |
+> | `warp-quire` | six row kinds and widths 1/2/5, which killed "infer the kind from cell three"; and that a chip must be a presentation |
+> | `warp-catalogue` | that three declared widgets were unpainted by the client, silently, because an unrecognised type falls back rather than failing |
+>
+> The catalogue is the one worth keeping deliberately: it is the only client whose subject is warp,
+> it renders through the real encoding rather than a fixture, and it is the arrangement that shows
+> every widget at once — which is the only way an unpainted one is visible at all.
+>
 > **Status: two, and the second one paid.** The device manager and the monitor were both flat lists,
 > so they agreed with each other about everything and could not disagree with the core. The file
 > browser is the first client that is shaped differently, and it immediately found rule 1 claiming a

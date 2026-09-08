@@ -539,19 +539,42 @@ Notes that are easy to get wrong:
 | `T` | `true` | |
 | list | array | |
 
-There is **no schema for cells.** Their meaning is a contract between one app's `present` methods
-and one page's stylesheet. The reference client hardcodes three shapes
-(`dom/client.js:paint`), and this is the closest thing to a convention that exists:
+A CELL'S MEANING IS DECLARED, by the presentation type it belongs to. This paragraph used to say
+there was no schema and that the reference client detected three shapes by inspecting them:
 
-| shape | detected by | cells |
-|---|---|---|
-| a row | default | `[value, label, trend]` — `trend` ∈ `"ok"`/`"warn"`/`"bad"` |
-| a menu item | `type === "menu-item"` | `[label, cost-class, "destructive"\|"safe"]` |
-| an opaque node | `cells[2] === "opaque"` | `[caption, dimensions, "opaque"]` |
+    if (type === "menu-item")     [label, cost, destructive?]
+    else if (cells[2] === "opaque") [caption, dims, "opaque"]
+    else                            [value, label, trend]
 
-The menu-item shape *is* fixed by core (`src/menu.lisp:present menu-item`) and is the one cell
-layout an encoding may rely on. The other two are app conventions
-(`app/monitor.lisp`, `files/model.lisp`).
+The third slot meant *trend*, or *destructive*, or the literal tag `"opaque"`, decided by testing
+its own contents — a type smuggled through a data slot. It held while every client was a flat list
+of one kind of thing, and stopped the moment one was not: a pivot row is a label, one number per
+column and a total, so there is no third slot to sniff and no width to widen to.
+
+`define-widget` (`src/widget.lisp`) now writes the layout down where the type is declared, and
+`widget-layout` resolves it against a real row — fixed names counted from the front and the back,
+one optional `(:repeat name)` absorbing the middle, so a table paints without the encoding being
+told how many columns there are. **Nothing on the wire changed**: every delta already carried
+`type`, and `%cells` already passed a list of any length.
+
+The core set, all of it in use by a shipping client:
+
+| widget | cells |
+|---|---|
+| `row` | `value label trend` — a number that leads |
+| `entry` | `label detail tag` — a name that leads |
+| `menu-item` | `label cost tone` |
+| `heading` / `prose` | `text level` / `text` |
+| `button` / `meter` | `glyph kind` / `state` |
+| `chip` | `label` |
+| `opaque` | `caption dimensions (repeat detail) kind` |
+| `table-head` / `table-row` / `table-total` | `corner (repeat column) total` / `label (repeat value) total` / `label value` |
+
+An **undeclared** type resolves to `NIL` and the encoding falls back to a plain row, which is what
+every client did before this and is never worse than guessing. That fallback is also why coverage
+needs a test rather than an eye: an unpainted widget is silent. `t/widgets.lisp` asserts it, and
+`warp-catalogue` renders the whole set through the real encoding — which is how three widgets were
+caught declared in Lisp and unpainted in the browser.
 
 **The opaque node** (Rule 9) is the app declaring a region it offers only as pixels. The `"opaque"`
 tag is the whole of what a non-blitting consumer needs: draw a labelled placeholder, not a row.
@@ -644,6 +667,22 @@ passed through `scroll-to`, which clamps against this consumer's `content-height
 with `:authorized-only NIL` — so a client can name a command it was never offered, which is the
 point (§13). `confirmed` is honoured only when it is literally `true`.
 
+**A picker carries its value on the same message:**
+
+```json
+{"t":"cmd","name":"set-measure","key":"<key>","value":"orders"}
+```
+
+`value` is passed only to a command that declares choices (`:values` on `define-command`).
+Offering one to a command that takes none is **refused, not ignored** — a surface sending it has
+misunderstood the command, and silently dropping it would run the verb instead, which for a
+destructive command is the wrong failure.
+
+This is warp's whole answer to changing a parameter from a touch screen, and it needed no new
+gesture: a `hold` lists the choices as menu items and the `tap` that follows carries the one that
+was tapped. Before it, every settable value needed its own command, so a cube with four measures
+was four commands and a fifth measure a fifth.
+
 ### 10.6 What a gesture means, server side
 
 `src/menu.lisp:on-gesture`, shared by every encoding. Resolving `(x,y)` or a key to a presentation
@@ -665,6 +704,33 @@ item, which is why Rule 5's vocabulary needed no new verb.
 
 A menu item's key is `menu:<kind>:<command-name|cancel>` (`src/menu.lisp`). Note it does **not**
 include the target, which is sound only because a consumer has at most one open menu.
+
+A picker's choice keys as `menu:choice:<command>:<label>`, because one command puts several items
+on one menu and they must not collide. Which choice is currently set is **state**, not a cell —
+`{"live": true}`, alongside `selected` on a row — for the reason DESIGN.md rule 7 gives: it is this
+consumer's view of the choice, not part of the choice.
+
+### 10.7 What this enum does and does not close
+
+**It closes the wire, not the interaction language**, and reading it as the second is the mistake
+it invites. A client may recognise anything it likes so long as what reaches the server decomposes
+into these verbs plus state the client already holds — which is exactly what `hold-drag-release`
+does, and it is the general rule rather than a special case. Swipe-to-reveal is a local animation
+whose revealed action is a presentation you `tap`. Pull-to-refresh is a `resync`. Back is the
+client popping its own navigation, or a `tap` on a `chip`.
+
+What does **not** decompose is continuous manipulation with live feedback — drag-to-reorder,
+pinch-to-zoom, scrubbing by dragging — because the thing being manipulated has to follow the
+finger at frame rate and this is a budgeted delta stream, not a feedback loop. The admissible
+shape is: animate locally, send ONE committed message at the end (a reorder is a `cmd` carrying
+the new position, i.e. a picker). The inadmissible shape is a stream of positional updates, which
+is a coordinate channel under another name and contradicts §10.5.
+
+Free-form text has no expression here at all. Tap, hold and two-finger can select from choices;
+they cannot compose a string. That is a protocol question, not a widget one.
+
+DESIGN.md's *The interaction language is not the wire vocabulary* carries the full argument and the
+rule for resolving a conflict between a platform convention and warp's shape.
 
 ---
 
