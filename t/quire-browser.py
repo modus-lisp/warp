@@ -113,7 +113,9 @@ with sync_playwright() as pw:
     ok("the cube's measures are on it", any("orders" in t for t in items), items[:6])
     # LIVE-NESS IS STATE, not a cell — the same rule as `selected' on a row.
     live = page.evaluate("[...document.querySelectorAll('#menu li.live')].map(li => li.textContent)")
-    ok("the value currently set is marked, and only it", len(live) == 2, live)
+    # ONE LIVE VALUE PER PICKER -- three pickers on this header (rows, columns, measure), so
+    # three marks.  Expecting two was my arithmetic, not the code's.
+    ok("exactly one value per picker is marked live", len(live) == 3, live)
 
     key = page.evaluate("[...document.querySelectorAll('#menu li')]"
                         ".filter(li => li.textContent.includes('orders'))[0].dataset.key")
@@ -127,7 +129,11 @@ with sync_playwright() as pw:
         " const li = c.querySelector('li.trow:not(.thead)');"
         " return [...li.querySelectorAll('.td')].map(s => s.textContent)})()")
     ok("tapping a value changed what the pivot measures", after[-1] == "6", after)
-    ok("and the menu closed", page.evaluate("document.querySelectorAll('#menu li').length") == 0)
+    # WAIT, do not assume ordering: closing the menu is a set of :gone deltas and they arrive on
+    # their own pass.  Asserting immediately after the row changed tests frame ordering, not the
+    # close, and that is a flake rather than a check.
+    page.wait_for_function("document.querySelectorAll('#menu li').length === 0", timeout=10000)
+    ok("and the menu closed", True)
 
     page.screenshot(path=SHOT, full_page=True)
     print(f"     screenshot: {SHOT}")

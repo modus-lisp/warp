@@ -42,6 +42,12 @@
                 #:ds-generation
                 #:present #:row-type-of #:now-tick
                 #:menu-item #:mi-kind #:mi-command #:mi-target
+                ;; the picker's half.  IMPORTED EXPLICITLY, like everything else here:
+                ;; warp-dom does not :USE warp, so exporting a symbol from warp is not
+                ;; enough to make it visible -- it has to be named in this list too.
+                ;; Missing it reads as a fresh WARP-DOM::MI-LIVE and fails at runtime
+                ;; inside MENU-PRESENTATIONS, where the error surfaces as an empty menu.
+                #:mi-value #:mi-vlabel #:mi-live #:cmd-values-fn
                 #:open-menu #:confirm-menu #:close-menu #:on-gesture #:run-command
                 #:find-command #:applicable-commands #:cmd-name)
   (:export

@@ -44,6 +44,8 @@
    #:consumer-landed #:consumer-emitted #:consumer-passes #:consumer-deferred
    ;; menus are presentations too; gestures are recognized at the edge and mean the same everywhere
    #:menu-item #:make-menu-item #:mi-kind #:mi-command #:mi-target
+   ;; the picker's half: a choice carries a value, a label and whether it is live
+   #:mi-value #:mi-vlabel #:mi-live
    #:open-menu #:confirm-menu #:close-menu #:on-gesture #:run-command
    ;; time as an input
    #:+tick-seconds+ #:now-tick))
