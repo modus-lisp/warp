@@ -271,13 +271,36 @@ are domain facts, not view state."))
 (define-default-command 'warp:meter 'catalogue-view 'set-level)
 
 (defun live-rows ()
+  "The four controls, each under its own heading.
+
+LABELLED INDIVIDUALLY, and that was a real gap rather than a polish item: the first version put
+one heading over all four and a paragraph explaining them collectively.  You could not tell by
+looking which strip of segments was the slider -- the reader has to match a sentence against a
+shape, which is exactly the work a catalogue exists to remove.  Every other section here names
+what it is showing; the live one was the only place that did not."
   (append
    (list (make-instance 'section-head :widget 'live :level 1)
          (make-instance 'section-note :widget 'live
-                        :text "these three are backed by real state: tap them.  a toggle is a row whose default command flips a boolean, an option is a tap that carries its value, a slider is a meter segment that sets the value to its own position, and a FIELD is a tap that means ask me -- the client collects the string with its own keyboard and sends the result.  none of them needed anything new on the wire."))
-   (list (make-instance 'live-toggle :state *demo*)
+                        :text "backed by real state -- tap them.  none of these needed anything new on the wire: each is a presentation with a declared default command."))
+
+   (list (make-instance 'section-head :widget 'toggle :level 3)
+         (make-instance 'section-note :widget 'toggle
+                        :text "a row whose default command flips a boolean.  on-ness is a CELL, because every seat looking at this setting must see the same value.")
+         (make-instance 'live-toggle :state *demo*))
+
+   (list (make-instance 'section-head :widget 'field :level 3)
+         (make-instance 'section-note :widget 'field
+                        :text "text INPUT, not text editing.  tapping means ask me: the client collects the string with its own keyboard and sends ONE message with the result.  no keystroke, cursor or intermediate string reaches the wire.")
          (make-instance 'live-field :state *demo*))
+
+   (list (make-instance 'section-head :widget 'choice-set :level 3)
+         (make-instance 'section-note :widget 'choice-set
+                        :text "a radio group, inline.  the same picker a hold-menu offers, drawn without the menu -- and which one is set is a cell, for the same reason the toggle's is."))
    (loop for m in +modes+ collect (make-instance 'live-choice :state *demo* :value m))
+
+   (list (make-instance 'section-head :widget 'slider :level 3)
+         (make-instance 'section-note :widget 'slider
+                        :text "a SLIDER, and it is the meter above with a command on it: tapping a segment sets the value to that segment's own position.  that is the whole decomposition -- the wire carries semantics, not a finger's path, so twenty segments is a percentage to the nearest five.  a CONTINUOUS slider is not available and is not faked."))
    (loop for i below +levels+ collect (make-instance 'live-seg :state *demo* :index i))))
 
 ;;; ---- the projection ----------------------------------------------------------------
@@ -339,7 +362,7 @@ same section conceptually."
     (section-head (format nil "w:~(~a~)" (section-widget o)))
     (section-note (format nil "w:~(~a~)" (note-widget o)))
     (live-toggle "live:toggle")
-    (live-field "live:toggle")
+    (live-field "live:field")
     (live-choice "opts:mode")          ; laid out as a strip, like any option set
     (live-seg    "seek:level")         ; and the slider as a bar
     (sample (format nil "s:~(~a~)" (sample-widget o)))

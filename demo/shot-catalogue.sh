@@ -35,7 +35,14 @@ with sync_playwright() as pw:
     p.evaluate("warp.viewport(160,0)")
     p.wait_for_function("warp.keys().length >= 80", timeout=20000)
     # A control at rest photographs as a control that does nothing, so set them first.
-    p.evaluate("warp.tap('live/toggle')")
+    #
+    # SET, DO NOT TOGGLE.  The demo state is a domain fact and is therefore SHARED across every
+    # connection -- which is correct, and means a previous run leaves it wherever it left it.  A
+    # script that blindly taps photographs the opposite of what it meant half the time.
+    if "on" not in p.evaluate("document.querySelector('#rows li.toggle').className"):
+        p.evaluate("warp.tap('live/toggle')")
+        p.wait_for_function("document.querySelector('#rows li.toggle').className.includes('on')",
+                            timeout=8000)
     p.evaluate("warp.setText('set-title','live/field','Quarterly review')")
     p.evaluate("warp.tap('live/choice/grid')")
     segs = p.evaluate("[...document.querySelectorAll('#rows .container[data-container=\"seek:level\"] li')]"
