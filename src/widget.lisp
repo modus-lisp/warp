@@ -168,12 +168,67 @@ the argument for doing what this one line already did.")
 :ok / :warn / :bad.  This is the layout the reference client falls back to, declared so that
 falling back to it is a decision rather than an else-branch.  In use by warp-monitor.")
 
-(define-widget opaque (caption dimensions kind)
+(define-widget entry (label detail tag)
+  "A NAMED thing in a list: what it is called, a secondary fact about it, and which kind it is.
+
+THE SECOND ROW WIDGET, and it earned that by being invented twice.  warp-files presents FS-HEAD,
+FS-DIR and FS-FILE as (name, size-or-count, :head/:dir/:file); warp-media presents MEDIA-HEAD,
+MEDIA-DIR and MEDIA-TRACK as (name, extension-or-count, :head/:dir/:track).  Two apps, no shared
+code, same three cells in the same order -- which is what `extract under load\' looks like when
+the load is real rather than anticipated.
+
+IT IS NOT `ROW\', and the difference is editorial rather than structural.  ROW leads with a VALUE
+because a monitor is read by glancing for the number that is wrong; an ENTRY leads with a NAME
+because a browser is read by looking for the thing you came for.  Same arity, opposite emphasis,
+and a stylesheet wants to know which.
+
+TAG is the app\'s own keyword -- :dir, :track, :head, :up -- not a closed enum.  An encoding that
+does not recognise one styles the row plainly, which is why adding a kind needs no core change.")
+
+(define-widget button (glyph kind)
+  "A CONTROL: a mark to touch, and what it does.
+
+warp\'s first genuine button, and it existed in warp-media before it existed here -- transport
+controls presenting (\"|<\" :prev), (\"||\"/\">\" :toggle), (\">|\" :next), (\"[]\" :stop).  This is
+the case DESIGN.md\'s `extract under load\' was waiting for and the reason the base set had no
+button until now: nothing needed one, because until media every affordance in warp was a ROW.
+
+THE GLYPH IS THE APP\'S, not an icon name from a set core would then have to own.  A text encoding
+prints it, a framebuffer draws it, and neither needs a sprite table.  KIND is what it means, so a
+consumer can style :stop differently from :next without parsing the glyph.
+
+A BUTTON IS STILL TAPPED LIKE ANYTHING ELSE.  It is a presentation with a declared default
+command; rule 5 needed no new verb for it, which is why this is a widget and not a mechanism.")
+
+(define-widget meter (state)
+  "ONE SEGMENT of a progress bar: :empty, :head or :filled.
+
+A METER IS N PRESENTATIONS, NOT ONE WIDE ROW, and warp-media found the reason: a second of
+playback changes AT MOST ONE CELL.  Send the bar as a single row and every tick re-sends the whole
+thing; send it as segments and the delta is one segment, which over a 1024-byte pass at 4 Hz is
+the difference between a scrubber and a stall.
+
+THIS IS THE COUNTER-EXAMPLE TO THE RULE AT `CHIP\', and both stay.  A chip is a presentation
+because it has identity in the domain; a meter segment has none -- it is an attribute of a
+position -- and is a presentation anyway, because it CHANGES INDEPENDENTLY.  So the rule has two
+clauses, and the second was hiding inside media the whole time:
+
+    a thing becomes a presentation when it has identity in the domain,
+    OR when it changes independently of its neighbours.
+
+A pivot cell has neither, which is why a table row is still one row of cells.")
+
+(define-widget opaque (caption dimensions (:repeat detail) kind)
   "A region the app offers only as pixels (rule 9).  KIND is the literal :OPAQUE, and it is
 the reason this file exists: the reference client detects an opaque node by testing whether
 the THIRD CELL says \"opaque\", which is a type inferred from a data slot.  Declared here so
 an encoding can switch on the presentation type and this cell can eventually go.  In use by
-warp-files (previews) and warp-media (the picture).")
+warp-files (previews) and warp-media (the picture).
+
+THE REPEAT IS FOR WHAT THE APP KNOWS AND CORE DOES NOT: warp-files sends caption and size, and
+warp-media sends a frame number as well.  Rather than two widgets differing by one cell, the
+middle is open and the tag stays last, so a consumer reads the ends and paints whatever detail
+it was given.")
 
 ;;; ---- the document set, from client four ------------------------------------------
 ;;; These arrived together because a compound document needed all of them at once, and they

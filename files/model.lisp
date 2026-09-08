@@ -259,6 +259,15 @@ consumer looking at it.  Returns NIL for a file that is not an image."
 ;;; A file's size is in there deliberately: it means writing to a file changes that one row and
 ;;; nothing else, which is the delta-scoping claim made testable.
 
+;;; ---- what these ARE, for an encoding ----------------------------------------
+;;; All three are core's ENTRY -- a name, a secondary fact, and which kind it is.  warp-media
+;;; arrived at the same three cells independently, which is why ENTRY is in core rather than
+;;; here.  The preview is core's OPAQUE: a region offered as pixels and described in words.
+(define-widget fs-head (label detail tag))
+(define-widget fs-dir (label detail tag))
+(define-widget fs-file (label detail tag))
+(define-widget fs-preview (caption dimensions kind))
+
 (defmethod present ((r fs-row) (type (eql 'fs-head)) (view (eql 'files-view)))
   (let ((col (row-column r)))
     (list (dir-display-name (column-path col))

@@ -30,6 +30,14 @@
   ((pubkey  :initarg :pubkey  :reader pubkey)
    (expires :initarg :expires :reader expires)))  ; unix
 
+;;; ---- what these ARE, for an encoding ----------------------------------------
+;;; Both are core's ROW: a value that leads, what it is, and how it is doing.  Declared rather
+;;; than assumed, so a client dispatches on the type instead of inferring the layout from the
+;;; third cell -- which is what it used to do, and what stopped working the moment a client
+;;; needed a row that was not three cells wide.
+(define-widget stat (value label trend))
+(define-widget enrolment (value label trend))
+
 (define-presentation-key stat (s) (stat-name s))
 (define-presentation-key enrolment (e) (pubkey e))
 

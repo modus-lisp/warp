@@ -163,6 +163,24 @@ ordinary presentation — the protocol carries no coordinates and does not need 
       (multiple-value-bind (m s) (floor (round secs) 60) (format nil "~d:~2,'0d" m s))
       "--:--"))
 
+;;; ---- what these ARE, for an encoding ----------------------------------------
+;;; The three list rows are core's ENTRY, the same three cells warp-files uses -- two apps that
+;;; never shared code and agreed exactly, which is why ENTRY is core's now.
+(define-widget media-head (label detail tag))
+(define-widget media-dir (label detail tag))
+(define-widget media-track (label detail tag))
+;;; The picture is OPAQUE with one extra detail (the frame number), which is what the repeat in
+;;; core's declaration is for.
+(define-widget media-picture (caption dimensions (:repeat detail) kind))
+;;; And the two that gave core its control widgets: a transport button, and one segment of the
+;;; scrubber.  A METER is N presentations because a second of playback changes at most one.
+(define-widget media-control (glyph kind))
+(define-widget media-seek (state))
+;;; The now-playing line is not a widget any other app has needed: title, elapsed/total, state,
+;;; and an error string that is usually empty.  Left as its own declaration rather than forced
+;;; into ROW -- four cells, and the fourth is a condition rather than a trend.
+(define-widget media-transport (title clock state error))
+
 (defmethod present ((r media-row) (type (eql 'media-head)) (view (eql 'media-view)))
   (let ((lib (row-library r)))
     (multiple-value-bind (dirs tracks) (%folder-listing lib)
