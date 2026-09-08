@@ -279,6 +279,25 @@ setting sees the same value, and a second seat must be told when it changes.  `s
 picker\'s `live\' are facts about the CONSUMER, and two seats may disagree about them forever.
 Rule 7 is the test: would another seat need to know?  Then it is content.")
 
+(define-widget field (label value)
+  "A NAMED STRING you can change: a filename, a search term, a title.
+
+INPUT, NOT EDITING, and that distinction is the whole reason this is a widget rather than a
+subsystem.  warp carries the COMMITTED value: the client collects the string with its own
+keyboard, its own selection, its own autocorrect and its own IME -- every one of which is better
+than anything warp would grow -- and sends ONE message when the person is done.  What does not
+travel is the composition: no keystrokes, no cursor, no selection range, no intermediate string.
+That is EDITING, it needs a continuous channel, and it is the same boundary DESIGN.md draws for
+continuous manipulation.
+
+So a field is a row that shows what the value IS, and whose default command carries `:prompt\'.
+Tapping it means ASK ME; the client asks however its platform asks and answers with a `cmd\'
+message carrying the result.  Rule 5 gains no verb, because the keyboard lives entirely between
+the tap and the message.
+
+VALUE MAY BE EMPTY and an encoding should say so rather than draw a blank: an empty field and a
+field showing nothing are different states, and only one of them is worth tapping.")
+
 (define-widget choice (label state)
   "ONE OPTION of a set shown INLINE -- a segmented control, a pill set, a row of tabs.
 

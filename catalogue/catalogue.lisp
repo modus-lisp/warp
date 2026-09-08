@@ -100,7 +100,25 @@ and there is nowhere else to put the distinction."
                                (sample (sample-id o))
                                (live-seg (format nil "live/seg/~a" (ls-index o))))))))
 
-(define-sample-presenters warp:menu-item warp:row warp:entry warp:opaque warp:heading
+;;; NOTE WHAT IS NOT IN THIS LIST: warp:menu-item.
+;;;
+;;; A PRESENTATION KEY IS GLOBAL PER TYPE, so declaring one for a CORE type overwrites core's.
+;;; The catalogue wants to show a menu item, so it declared a key for MENU-ITEM -- and every real
+;;; hold-menu in the image then died in the catalogue's key function, which knew about samples and
+;;; not about menu items.  Nothing warned; the menu simply never appeared.
+;;;
+;;; So menu items are shown under the catalogue's OWN type with the same cells.  It is a hair less
+;;; honest than every other section -- this one renders a copy rather than the thing -- and that is
+;;; the correct trade: a catalogue may not break the app it is documenting.  The alternative is to
+;;; make keys dispatch on the OBJECT rather than the type, which is a real design question and not
+;;; one to answer in a demo.
+(define-widget cat-menu (label cost tone))
+
+(defmethod present ((s sample) (type (eql 'cat-menu)) (view (eql 'catalogue-view)))
+  (sample-cells s))
+(define-presentation-key cat-menu (s) (sample-id s))
+
+(define-sample-presenters warp:row warp:entry warp:opaque warp:heading
                           warp:prose warp:button warp:meter warp:table-head warp:table-row
                           warp:table-total warp:chip)
 
@@ -141,7 +159,7 @@ and there is nowhere else to put the distinction."
       ("East" "8.6k" "38.0k" "14.9k" "61.5k")))
     (warp:table-total "the grand total under a pivot"
      (("amount" "471.0k")))
-    (warp:menu-item  "a command on an open hold-menu.  destructive ones look different"
+    (cat-menu        "a command on an open hold-menu.  destructive ones look different"
      (("open" :local :safe)
       ("copy path" :local :safe)
       ("revoke terminal" :gateway :destructive))))
@@ -163,6 +181,7 @@ and there is nowhere else to put the distinction."
 
 (defclass demo-state ()
   ((flag  :initform nil :accessor demo-flag)
+   (title :initform "" :accessor demo-title)
    (mode  :initform "list" :accessor demo-mode)
    (level :initform 7 :accessor demo-level))
   (:documentation "What the live section manipulates.  One instance, because the catalogue is
@@ -176,19 +195,24 @@ are domain facts, not view state."))
                           (value :initarg :value :reader lc-value)))
 (defclass live-seg    () ((state :initarg :state :reader ls-state)
                           (index :initarg :index :reader ls-index)))
+(defclass live-field  () ((state :initarg :state :reader lf-state)))
 
 (defparameter +levels+ 20)
 (defparameter +modes+ '("list" "grid" "columns"))
 
-(define-sample-keys warp:menu-item warp:row warp:entry warp:opaque warp:heading
+(define-sample-keys warp:row warp:entry warp:opaque warp:heading
                     warp:prose warp:button warp:meter warp:table-head warp:table-row
                     warp:table-total warp:chip)
 
 (define-presentation-key warp:toggle (o) (progn o "live/toggle"))
 (define-presentation-key warp:choice (o) (format nil "live/choice/~a" (lc-value o)))
+(define-presentation-key warp:field (o) (progn o "live/field"))
 
 (defmethod present ((o live-toggle) (type (eql 'warp:toggle)) (view (eql 'catalogue-view)))
   (list "show hidden files" (if (demo-flag (lt-state o)) :on :off)))
+
+(defmethod present ((o live-field) (type (eql 'warp:field)) (view (eql 'catalogue-view)))
+  (list "document title" (demo-title (lf-state o))))
 
 (defmethod present ((o live-choice) (type (eql 'warp:choice)) (view (eql 'catalogue-view)))
   (list (lc-value o)
@@ -207,6 +231,17 @@ are domain facts, not view state."))
   (setf (demo-flag (lt-state o)) (not (demo-flag (lt-state o))))
   (list :flag (demo-flag (lt-state o))))
 (define-default-command 'warp:toggle 'catalogue-view 'flip)
+
+(define-command (set-title :arg-type warp:field :cost :local :label "set the title"
+                           ;; :PROMPT is the whole of text input.  The client collects a string
+                           ;; however its platform collects strings and sends the result; warp
+                           ;; never sees a keystroke.
+                           :prompt "document title")
+    (o invoker value)
+  (declare (ignore invoker))
+  (setf (demo-title (lf-state o)) value)
+  (list :title value))
+(define-default-command 'warp:field 'catalogue-view 'set-title)
 
 (define-command (pick-mode :arg-type warp:choice :cost :local :label "pick") (o invoker)
   (declare (ignore invoker))
@@ -227,8 +262,9 @@ are domain facts, not view state."))
   (append
    (list (make-instance 'section-head :widget 'live :level 1)
          (make-instance 'section-note :widget 'live
-                        :text "these three are backed by real state: tap them.  a toggle is a row whose default command flips a boolean, an option is a tap that carries its value, and a slider is a meter segment that sets the value to its own position.  none of the three needed anything new on the wire."))
-   (list (make-instance 'live-toggle :state *demo*))
+                        :text "these three are backed by real state: tap them.  a toggle is a row whose default command flips a boolean, an option is a tap that carries its value, a slider is a meter segment that sets the value to its own position, and a FIELD is a tap that means ask me -- the client collects the string with its own keyboard and sends the result.  none of them needed anything new on the wire."))
+   (list (make-instance 'live-toggle :state *demo*)
+         (make-instance 'live-field :state *demo*))
    (loop for m in +modes+ collect (make-instance 'live-choice :state *demo* :value m))
    (loop for i below +levels+ collect (make-instance 'live-seg :state *demo* :index i))))
 
@@ -261,13 +297,19 @@ a widget changed."
 (defun row-type (o)
   "Which presentation type each row is.  A sample is presented AS ITS WIDGET, which is what makes
 this a catalogue rather than a screenshot of one."
-  (etypecase o
+  ;; TOTAL, NOT ETYPECASE, and that was a real bug rather than a style point: a menu item is not
+  ;; a projection row, but it reaches a consumer's layout all the same, and an ETYPECASE here
+  ;; killed every pass the moment a menu opened.  The default is core's own -- the object's class
+  ;; name -- which is what PROJECTION-TYPE-FN falls back to when an app declares nothing.
+  (typecase o
     (section-head 'cat-head)
     (section-note 'cat-note)
     (live-toggle 'warp:toggle)
+    (live-field 'warp:field)
     (live-choice 'warp:choice)
     (live-seg 'warp:meter)
-    (sample (sample-widget o))))
+    (sample (sample-widget o))
+    (t (class-name (class-of o)))))
 
 (defun row-container (o)
   "TWO containers per section: the prose, and the samples.
@@ -281,13 +323,15 @@ So the strip is its own container.  That is the same rule warp-quire found for c
 chips is a container, not a widget) arriving from the other side: a container is the unit of
 LAYOUT, so anything laid out differently is a different container, even when it belongs to the
 same section conceptually."
-  (etypecase o
+  (typecase o
     (section-head (format nil "w:~(~a~)" (section-widget o)))
     (section-note (format nil "w:~(~a~)" (note-widget o)))
     (live-toggle "live:toggle")
+    (live-field "live:toggle")
     (live-choice "opts:mode")          ; laid out as a strip, like any option set
     (live-seg    "seek:level")         ; and the slider as a bar
-    (sample (format nil "s:~(~a~)" (sample-widget o)))))
+    (sample (format nil "s:~(~a~)" (sample-widget o)))
+    (t "rows")))
 
 (defun catalogue-projection ()
   (make-projection #'catalogue-rows :type-fn #'row-type))

@@ -370,7 +370,10 @@ consumer over the same projection is not disturbed by any of it."
             ;; A PICKER'S VALUE RIDES THE SAME MESSAGE.  `value' is only passed when the command
             ;; declares choices -- INVOKE refuses a value on a command that takes none, and this
             ;; path must not turn that refusal into a silent run of the verb.
-            (if (cmd-values-fn cmd)
+            ;; A PROMPT COMMAND TAKES A VALUE TOO.  This tested only for enumerated choices, so
+            ;; a field's committed string arrived and was dropped, and INVOKE then refused the
+            ;; command for needing a value it had just been sent.
+            (if (or (cmd-values-fn cmd) (cmd-prompt cmd))
                 (run-command c cmd (p-object p)
                              :confirmed (eq t (json-get msg "confirmed"))
                              :value (json-get msg "value"))

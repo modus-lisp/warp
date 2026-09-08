@@ -242,6 +242,7 @@ function makeWarpClient(opts) {
     "meter":           {fixed: ["state"]},
     "toggle":          {fixed: ["label", "state"]},
     "choice":          {fixed: ["label", "state"]},
+    "field":           {fixed: ["label", "value"]},
     // The document client's own types map onto those kinds.  An app declares this in Lisp with
     // DEFINE-WIDGET; here it is the same statement in the encoding that has to draw it.
     "heading-row":     {fixed: ["text", "level"]},
@@ -264,6 +265,7 @@ function makeWarpClient(opts) {
     "media-seek":      {fixed: ["state"]},
     "cat-head":        {fixed: ["text", "level"]},
     "cat-note":        {fixed: ["text"]},
+    "cat-menu":        {fixed: ["label", "cost", "tone"]},
   };
 
   // Resolve a declaration against an actual row: n names, one per cell, or null when the type is
@@ -283,6 +285,24 @@ function makeWarpClient(opts) {
     const names = layoutOf(d.type, cells.length);
     const at = (name) => { const i = names ? names.indexOf(name) : -1;
                            return i < 0 ? null : cells[i]; };
+
+    if (d.type === "cat-menu") {
+      li.className = at("tone") === "destructive" ? "menusample destructive" : "menusample";
+      li.innerHTML = "";
+      li.append(cell("t", at("label")));
+      if (at("cost")) li.append(cell("c", at("cost")));
+      return;
+    }
+
+    if (d.type === "menu-item" && at("cost") === "text") {
+      // A PROMPT ITEM: tapping it means ASK ME.  The keyboard is entirely the client's, between
+      // this tap and the cmd message below -- which is why warp needed no new gesture and sees
+      // no keystrokes.
+      li.className = "prompt";
+      li.innerHTML = "";
+      li.append(cell("t", at("label")), cell("c", "…"));
+      return;
+    }
 
     if (d.type === "menu-item") {
       // `live' is STATE, not a cell: which value is currently set is this consumer's view of the
@@ -376,6 +396,14 @@ function makeWarpClient(opts) {
       li.className = "ttotal";
       li.innerHTML = "";
       li.append(cell("l", at("label")), cell("v", at("value")));
+      return;
+    }
+
+    if (d.type === "field") {
+      const v = at("value");
+      li.className = "field" + (v ? "" : " empty");
+      li.innerHTML = "";
+      li.append(cell("n", at("label")), cell("val", v || "— not set —"));
       return;
     }
 
@@ -532,6 +560,21 @@ function makeWarpClient(opts) {
     tap: (k) => send({t: "gesture", g: "tap", key: k}),
     hold: (k) => send({t: "gesture", g: "hold", key: k}),
     cmd: (name, key, confirmed) => send({t: "cmd", name, key, confirmed: !!confirmed}),
+    // TEXT INPUT, AND THE LINE IT DOES NOT CROSS.  `ask' collects a string with whatever this
+    // platform uses -- here window.prompt, on a phone the native keyboard with its own selection,
+    // autocorrect and IME -- and sends ONE message with the result.  No keystroke, cursor or
+    // intermediate string reaches the wire, which is the difference between text INPUT (this) and
+    // text EDITING (a continuous channel warp does not have).
+    //
+    // A CANCEL SENDS NOTHING.  window.prompt returns null when dismissed, and that is a different
+    // thing from an empty string: one means "I changed my mind", the other means "make it empty".
+    // Collapsing them would rename a file to "" on a mis-tap.
+    setText: (name, key, value) => { if (value != null) send({t: "cmd", name, key, value}); },
+    ask: (name, key, current, question) => {
+      const v = window.prompt(question || "value", current == null ? "" : String(current));
+      if (v != null) send({t: "cmd", name, key, value: v});
+      return v;
+    },
     viewport: (rows, sc) => send({t: "viewport", rows, scroll: sc}),
     // every row this client holds, in document order — which for a flat app is the rows element's
     // own children and for a nesting one reads across its containers, left to right

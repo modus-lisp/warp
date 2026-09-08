@@ -23,7 +23,7 @@
 (in-package #:warp)
 
 (defstruct (menu-item (:conc-name mi-))
-  kind        ; :command | :confirm | :cancel | :choice
+  kind        ; :command | :confirm | :cancel | :choice | :prompt
   command     ; the COMMAND object (nil for :cancel)
   target      ; the domain object it would act on
   ;; ---- for :choice, the picker's half -------------------------------------------------
@@ -55,6 +55,10 @@
       ;; it is this consumer's view of it, which is what P-STATE is for (rule 7) and is
       ;; EQUAL-compared exactly like a fingerprint.
       (:choice  (list (mi-vlabel m) (cmd-cost c) :safe))
+      ;; A PROMPT ITEM SAYS WHAT IT WILL ASK, and the client turns tapping it into "collect a
+      ;; string, then invoke with it".  It is a menu item and not a new gesture, so rule 5 is
+      ;; untouched: the keyboard is the client's business between the tap and the message.
+      (:prompt  (list (cmd-label c) :text :safe))
       (:confirm (list (format nil "really ~a?" (cmd-label c)) :confirm :destructive))
       (:cancel  (list "cancel" nil :safe)))))
 
@@ -93,14 +97,20 @@ THIS IS THE WHOLE OF THE MANIPULATIVE CORE AT THE MENU LAYER.  A parameter does 
 gesture, a new delta kind or a coordinate -- it needs the menu that HOLD already opens to list
 values instead of verbs, and rule 5's tap to carry the one that was tapped."
   (let ((choices (command-values cmd object)))
-    (if (null choices)
-        (list (make-menu-item :kind :command :command cmd :target object))
-        (let ((now (command-current cmd object)))
-          (loop for (v . label) in choices
-                collect (make-menu-item :kind :choice :command cmd :target object
-                                        :value v
-                                        :vlabel (or label (format nil "~a" v))
-                                        :live (and now (equal now v))))))))
+    (cond
+      ((command-prompt cmd)
+       (list (make-menu-item :kind :prompt :command cmd :target object
+                             :vlabel (let ((p (command-prompt cmd)))
+                                       (if (stringp p) p (cmd-label cmd))))))
+      ((null choices)
+       (list (make-menu-item :kind :command :command cmd :target object)))
+      (t
+       (let ((now (command-current cmd object)))
+         (loop for (v . label) in choices
+               collect (make-menu-item :kind :choice :command cmd :target object
+                                       :value v
+                                       :vlabel (or label (format nil "~a" v))
+                                       :live (and now (equal now v)))))))))
 
 (defun open-menu (c target commands)
   "Rule 5: hold lists the applicable commands.  TARGET is the presentation held, kept because an
@@ -173,6 +183,10 @@ knows what its coordinates mean."
              (:choice
               (run-command c (mi-command it) (mi-target it) :value (mi-value it))
               (close-menu c))
+             ;; A PROMPT ITEM IS NOT INVOKED BY THE TAP.  The tap means "ask me", and the client
+             ;; answers with a `cmd' message carrying the string it collected.  Tapping it here
+             ;; only closes the menu -- ON-GESTURE has no keyboard and must not pretend to.
+             (:prompt (close-menu c))
              (:confirm
               (run-command c (mi-command it) (mi-target it) :confirmed t)
               (close-menu c))))))

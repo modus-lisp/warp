@@ -97,6 +97,17 @@
       color: #0c0e12; }
   #rows li.toggle.on { border-left-color: #5abe82; }
   #rows li.toggle.on .box { background: #5abe82; border-color: #5abe82; }
+  /* ---- field: a named string you can change.  The value leads visually because that is what
+     you are checking; the label is the question. */
+  #rows li.field { cursor: pointer; border-left-color: #b48ead; }
+  #rows li.field .n { color: #8a949c; font-size: 12px; }
+  #rows li.field .val { margin-left: auto; color: #dce4ec; }
+  #rows li.field.empty .val { color: #6a747c; font-style: italic; }
+  #menu li.prompt { border-left-color: #b48ead; }
+  #rows li.menusample { background: #222c38; border-left-color: #dce4ec; }
+  #rows li.menusample.destructive { background: #3a1c1c; border-left-color: #f04646;
+                                    color: #ffb0b0; }
+  #rows li.menusample .c { margin-left: auto; color: #8a949c; font-size: 10px; }
   /* ---- choice: an option of an inline set.  A pill, and the live one is filled. */
   #rows li.choice { display: inline-flex; width: auto; border: 0; background: #222c38;
       border-radius: 14px; margin: 4px 4px; padding: 5px 14px; cursor: pointer; }

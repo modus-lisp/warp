@@ -47,7 +47,7 @@
                 ;; enough to make it visible -- it has to be named in this list too.
                 ;; Missing it reads as a fresh WARP-DOM::MI-LIVE and fails at runtime
                 ;; inside MENU-PRESENTATIONS, where the error surfaces as an empty menu.
-                #:mi-value #:mi-vlabel #:mi-live #:cmd-values-fn
+                #:mi-value #:mi-vlabel #:mi-live #:cmd-values-fn #:cmd-prompt
                 #:open-menu #:confirm-menu #:close-menu #:on-gesture #:run-command
                 #:find-command #:applicable-commands #:cmd-name)
   (:export

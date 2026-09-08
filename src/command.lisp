@@ -37,6 +37,18 @@
   ;; entry, and no coordinate.  A parameter whose range is genuinely continuous has to be
   ;; quantised into choices by the app, which is the app's business and not the protocol's.
   (values-fn nil)
+  ;; PROMPT makes a command take a FREE value instead of an enumerated one: a string the client
+  ;; collected however its platform collects strings.  It is a string to show while asking (a
+  ;; label, a placeholder) or T for "asks for text, no prompt of its own".
+  ;;
+  ;; TEXT INPUT IS NOT TEXT EDITING, and the whole of why this is three lines rather than a
+  ;; subsystem is that warp only ever sees the COMMITTED value.  The client uses its own
+  ;; keyboard, its own selection, its own autocorrect and its own IME -- every one of which is
+  ;; better than anything warp would grow -- and sends one message when the person is done.
+  ;; What warp does NOT do is carry the composition: no keystrokes, no cursor, no selection
+  ;; range, no intermediate string.  That is EDITING, it needs a continuous channel, and it is
+  ;; the same boundary drawn for continuous manipulation in DESIGN.md.
+  (prompt nil)
   ;; CURRENT lets a control show what is set now: (object) -> the value, compared with EQUAL
   ;; against the car of a VALUES pair.  Optional; without it a picker still works and simply
   ;; cannot mark which option is live.
@@ -46,7 +58,7 @@
 (defvar *defaults* (make-hash-table :test 'equal))       ; (type . view) -> command name
 
 (defmacro define-command ((name &key arg-type (cost :local) destructive confirm label
-                                     values current)
+                                     values current prompt)
                           (object invoker &optional value) &body body)
   "Declare a command against a presentation type.  BODY is the handler; AUTHORIZE is attached
 separately with DEFINE-COMMAND-AUTHORIZATION so the predicate can live next to the policy it
@@ -71,6 +83,7 @@ possible value -- MEASURE-SUM, MEASURE-COUNT -- which does not survive a paramet
                          :authorize (and existing (cmd-authorize existing))
                          :values-fn ,values
                          :current-fn ,current
+                         :prompt ,prompt
                          :handler (lambda (,object ,invoker
                                            ,@(when value (list value)))
                                     (declare (ignorable ,object ,invoker
@@ -141,6 +154,10 @@ so a surface that offers too much cannot grant anything."
   "The choices C offers for OBJECT, as ((value . label) ...), or NIL if it is not a picker."
   (let ((f (cmd-values-fn c))) (and f (funcall f object))))
 
+(defun command-prompt (c)
+  "What to ask, when C takes free text: a string, T, or NIL when it takes none."
+  (cmd-prompt c))
+
 (defun command-current (c object)
   "The value currently set on OBJECT, or NIL.  Compared EQUAL against a choice's car."
   (let ((f (cmd-current-fn c))) (and f (funcall f object))))
@@ -157,9 +174,15 @@ dropping it would run the verb instead -- which for a destructive command is the
       (error 'command-refused :command c :reason "not authorized"))
     (when (and (cmd-confirm c) (not confirmed))
       (error 'command-refused :command c :reason "irreversible; needs confirmation"))
-    (when (and value-p (not (cmd-values-fn c)))
+    (when (and value-p (not (or (cmd-values-fn c) (cmd-prompt c))))
       (error 'command-refused :command c :reason "takes no value"))
-    (if (cmd-values-fn c)
+    ;; A PROMPT COMMAND WITHOUT A VALUE IS NOT AN INVOCATION, it is the client asking what to
+    ;; ask.  Refusing rather than running with NIL is the difference between "the user cancelled"
+    ;; and "the user submitted nothing", and a rename that silently renamed to NIL would be the
+    ;; wrong failure.
+    (when (and (cmd-prompt c) (not value-p))
+      (error 'command-refused :command c :reason "needs a value"))
+    (if (or (cmd-values-fn c) (cmd-prompt c))
         (funcall (cmd-handler c) object invoker value)
         (funcall (cmd-handler c) object invoker))))
 

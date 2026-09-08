@@ -5,7 +5,7 @@
   (:local-nicknames (#:bt #:bordeaux-threads))
   (:export
    ;; presentations
-   #:command-values #:command-current
+   #:command-values #:command-current #:command-prompt #:cmd-prompt
    #:define-widget #:widget-of #:widget-cells #:widget-layout
    ;; THE CORE SET, BY NAME.  Exported because a vocabulary you cannot name is not a
    ;; vocabulary: an app declaring its own type wants to say "this is a BUTTON", and a test or
@@ -13,7 +13,7 @@
    ;; symbol identity, so an unexported name read in another package is a different widget --
    ;; which is the same cross-package trap that made cell names keywords.
    #:menu-item #:row #:entry #:opaque #:heading #:prose #:button #:meter
-   #:table-head #:table-row #:table-total #:chip #:toggle #:choice
+   #:table-head #:table-row #:table-total #:chip #:toggle #:choice #:field
    #:presentation #:make-presentation #:copy-presentation
    #:p-key #:p-type #:p-object #:p-extent #:p-as-of
    #:p-fingerprint #:p-state #:p-children #:p-cost
