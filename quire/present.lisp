@@ -42,6 +42,22 @@
 
 (in-package #:warp-quire)
 
+;;; ---- the declarations ---------------------------------------------------------------
+;;; These say which CORE widget each of this app's row types is, which is the whole of what an
+;;; encoding needs to paint them.  The app's classes stay its own -- a SLICE-DATA-ROW is not a
+;;; subclass of anything in warp -- and the mapping is a side table, like PRESENTATION-KEY.
+;;;
+;;; Six types, five core widgets: HEADING-ROW and PROSE-ROW are their obvious ones, the two
+;;; table rows are the n-ary pair that made the old convention untenable, and CRUMB-ROW is
+;;; CHIPS, whose declaration in core carries the known gap about per-chip tapping.
+
+(define-widget heading-row (text level))
+(define-widget prose-row (text))
+(define-widget slice-head-row (corner (:repeat column) total))
+(define-widget slice-data-row (label (:repeat value) total))
+(define-widget slice-total-row (label value))
+(define-widget crumb-row ((:repeat chip)))
+
 ;;; ---- authored ---------------------------------------------------------------------
 
 ;;; HEADING   cells: (text level)
@@ -75,9 +91,14 @@
 ;;; the last cell is the total because that is this type's layout; it never has to guess from
 ;;; the value.
 (defmethod present ((r slice-data-row) (type (eql 'slice-data-row)) (view (eql 'quire-view)))
-  (append (list (data-label r))
-          (mapcar #'cdr (data-cells r))
-          (when (cdr (data-cells r)) (list (data-total r)))))
+  ;; THE TOTAL IS ALWAYS PRESENT, matching the head.  For a plain list the row's one number is
+  ;; its total across an empty column axis, so the layout is (LABEL TOTAL) and the repeat
+  ;; absorbs nothing -- which is what WIDGET-LAYOUT answers for n=2 and is why the two shapes
+  ;; can share a type at all.
+  (let ((cols (mapcar #'cdr (data-cells r))))
+    (if (cdr (data-cells r))
+        (append (list (data-label r)) cols (list (data-total r)))
+        (list (data-label r) (data-total r)))))
 
 ;;; TABLE-TOTAL cells: (label value)
 (defmethod present ((r slice-total-row) (type (eql 'slice-total-row)) (view (eql 'quire-view)))

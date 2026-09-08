@@ -148,11 +148,21 @@ warp-files uses for `col:<path>' -- an app container's name is the app's, and mu
           ;; a row that exists only to say "nothing here" is a row the budget pays for.
           (when (slice-filter sl)
             (list (make-instance 'crumb-row :part p :path (slice-filter sl))))
+          ;; THE HEAD ALWAYS ENDS WITH THE TOTAL COLUMN, pivoted or not, and that is a
+          ;; correction the widget declaration forced.  It used to append "total" only when
+          ;; there were columns, so a plain list's head was ONE cell while a pivot's was N --
+          ;; two shapes wearing one presentation type, which WIDGET-LAYOUT refused to resolve
+          ;; and the old sniff-the-cells convention would have painted without complaint.
+          ;;
+          ;; Making them consistent is not padding: for a list grouped by one dimension, the
+          ;; row's single number IS its total across the (empty) column axis, so `(corner
+          ;; total)' is what that row has always meant.  The heading reads better as the
+          ;; measure's name than the word "total" when there is nothing to total across.
           (list (make-instance 'slice-head-row :part p
-                               :labels (cons (slice-rows-by sl)
-                                             (append (mapcar (lambda (c) (format nil "~a" c))
-                                                             (or cols '()))
-                                                     (when cols (list "total"))))))
+                               :labels (append (list (slice-rows-by sl))
+                                               (mapcar (lambda (c) (format nil "~a" c))
+                                                       (or cols '()))
+                                               (list (if cols "total" (slice-measure sl))))))
           (mapcar (lambda (r)
                     (make-instance 'slice-data-row :part p
                                    :label (format nil "~a" (slice-row-label r))

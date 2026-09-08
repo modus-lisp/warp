@@ -18,6 +18,7 @@ lets N consumers share one query.  The renderer is one encoding, and it is not i
      (:file "presentation")     ; the record, per-type key functions, grid-snapped extents
      (:file "reconcile")        ; state->state diff, coalescing, budget + deferral, snapshots
      (:file "command")          ; commands on types: applicability, declared safe defaults, invocation
+     (:file "widget")           ; what a row's cells MEAN: the declared layout per type
      (:file "present")          ; present (object type view) + list layout
      (:file "projection")       ; rule 8, shared half: the query and the objects it returns
      (:file "consumer")         ; rule 8, per-consumer half: layout, budget, stream, the encoding seam

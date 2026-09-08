@@ -67,7 +67,21 @@
   (ok "a pivot row carries label + one cell per quarter + total"
       (member 5 widths))                     ; region + Q1 Q2 Q3 + total
   (ok "every delta names its type, so an encoding need not sniff cells"
-      (every (lambda (d) (stringp (d-type d))) ds)))
+      (every (lambda (d) (stringp (d-type d))) ds))
+  ;; THE DECLARATION IS THE POINT, so assert it resolves rather than that it exists.  This is
+  ;; the check that caught a real inconsistency while it was being written: a plain list's head
+  ;; row was ONE cell where a pivot's was N -- two shapes wearing one presentation type, which
+  ;; the old sniff-the-cells convention would have painted without complaint.
+  (ok "every row resolves against its declared widget layout"
+      (every (lambda (d)
+               (let ((p (warp::delta-presentation d)))
+                 (and p (warp:widget-layout (warp::p-type p)
+                                            (length (warp::p-fingerprint p))))))
+             ds))
+  (ok "a pivot row resolves to label + values + total"
+      (let ((d (find-if (lambda (d) (= 5 (length (d-cells d)))) ds)))
+        (equal '(:label :value :value :value :total)
+               (warp:widget-layout (warp::p-type (warp::delta-presentation d)) 5)))))
 
 ;;; ---- 2. authored parts cost nothing on a quiet pass ---------------------------
 (format t "~&~%-- 2. a quiet pass over a document that is half prose --~%")

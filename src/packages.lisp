@@ -5,6 +5,7 @@
   (:local-nicknames (#:bt #:bordeaux-threads))
   (:export
    ;; presentations
+   #:define-widget #:widget-of #:widget-cells #:widget-layout
    #:presentation #:make-presentation #:copy-presentation
    #:p-key #:p-type #:p-object #:p-extent #:p-as-of
    #:p-fingerprint #:p-state #:p-children #:p-cost

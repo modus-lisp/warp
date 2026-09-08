@@ -1,0 +1,212 @@
+;;;; widget.lisp — what a row's cells MEAN, declared once, for every encoding.
+;;;;
+;;;; ==================================================================================
+;;;; THE PROBLEM THIS SOLVES, AS IT ACTUALLY APPEARED
+;;;; ==================================================================================
+;;;;
+;;;; PRESENT returns a list of cells and nothing said what they are.  PROTOCOL.md §10.3 is
+;;;; explicit about it — "There is no schema for cells.  Their meaning is a contract between
+;;;; one app's `present' methods and one page's stylesheet" — and names three shapes the
+;;;; reference client hardcodes.  With three clients that were each a flat list of one kind of
+;;;; thing, that contract held, because each app had exactly one row shape to agree about.
+;;;;
+;;;; What it degenerated into is in dom/client.js:
+;;;;
+;;;;     if (d.type === "menu-item")     [label, cost, destructive?]
+;;;;     else if (cells[2] === "opaque") [caption, dims, "opaque"]
+;;;;     else                            [value, label, trend]
+;;;;
+;;;; The third slot means TREND, or DESTRUCTIVE, or the literal type tag "opaque", and which
+;;;; one is decided by TESTING ITS OWN CONTENTS.  A type smuggled through a data slot.
+;;;;
+;;;; Client four (warp-quire, a compound document over a cube) broke it by existing.  Six row
+;;;; kinds, cell widths of 1, 2 and 5 — a pivot row is a label, one number per column and a
+;;;; total — so there is no third slot to sniff and no width the convention could be widened
+;;;; to.  Measured in t/quire.lisp rather than argued.
+;;;;
+;;;; ==================================================================================
+;;;; WHAT CHANGES, AND WHAT DELIBERATELY DOES NOT
+;;;; ==================================================================================
+;;;;
+;;;; NOT THE WIRE.  Every delta already carries `type', and DOM-CONSUMER's %CELLS already
+;;;; passes a list of any length.  Nothing here adds a field, a version, or a negotiation.
+;;;;
+;;;; NOT PRESENT.  Methods still return a list of cells.  A widget declaration says what those
+;;;; cells ARE; it does not wrap them, validate them at runtime, or stand between an app and
+;;;; its own output.  A kit that made PRESENT more expensive would be paid for on every row of
+;;;; every pass.
+;;;;
+;;;; WHAT CHANGES is that the contract stops being folklore.  DEFINE-WIDGET writes the layout
+;;;; down where the type is declared, and an encoding asks — WIDGET-CELLS — instead of
+;;;; guessing.  MENU-ITEM is the proof this works, because core already did exactly this for
+;;;; it and PROTOCOL.md calls it "the one cell layout an encoding may rely on".  The change is
+;;;; to stop that being the only one.
+;;;;
+;;;; ==================================================================================
+;;;; WHY A REGISTRY AND NOT A CLASS HIERARCHY
+;;;; ==================================================================================
+;;;;
+;;;; A widget is not a thing an app subclasses.  Presentation types are already the app's own
+;;;; domain classes — STAT, FS-FILE, SLICE-DATA-ROW — and asking an app to inherit from
+;;;; WARP:ROW to be paintable would put a UI toolkit in the way of its model, which is the
+;;;; thing DESIGN.md's opening refuses ("not McCLIM: retained but imperative, and its size is
+;;;; the problem").
+;;;;
+;;;; So a declaration is a side table keyed by the presentation type, exactly like
+;;;; PRESENTATION-KEY, and an app declares its rows are a KIND without changing what they are.
+;;;;
+;;;; ==================================================================================
+;;;; N-ARY, AND WHY THAT IS A PROPERTY RATHER THAN A COUNT
+;;;; ==================================================================================
+;;;;
+;;;; A pivot row's width is the number of columns in the slice — it changes when the user
+;;;; pivots, and two consumers of one projection see the same width because it comes from the
+;;;; result-set.  So a widget declares its FIXED cells by name and may declare one REPEATING
+;;;; group, which is what lets an encoding paint a table without being told how many quarters
+;;;; there are:
+;;;;
+;;;;     (define-widget table-row (label (:repeat value) total))
+;;;;
+;;;; The repeat is greedy and there is at most one, so a layout is unambiguous from the front
+;;;; and the back: fixed cells before it are counted forwards, fixed cells after it backwards,
+;;;; and whatever is left is the repeat.  Two repeats would need a delimiter on the wire, and
+;;;; a delimiter is the thing this file exists to avoid.
+
+(in-package #:warp)
+
+(defstruct (widget (:conc-name wg-))
+  type                ; the presentation type this describes
+  cells               ; the declared layout: (name | (:repeat name)) ...
+  doc)
+
+(defvar *widgets* (make-hash-table :test 'eq)
+  "Presentation type -> WIDGET.  A side table for the reason PRESENTATION-KEY is one: an app's
+rows are its own classes and warp does not get to be their superclass.")
+
+(defun %cell-name (spec)
+  "Normalize a declared cell name to a KEYWORD.
+
+NAMES ARE KEYWORDS, and the alternative is a bug that only appears across packages.  A
+declaration is written wherever the app lives, so `label' in warp-quire reads as
+WARP-QUIRE::LABEL while an encoding comparing against its own `label' has WARP-DOM::LABEL --
+two symbols that print identically and are never EQ.  The first client to declare a widget
+outside warp would have found this, and the test that resolves a pivot row did."
+  (etypecase spec
+    (symbol (intern (symbol-name spec) :keyword))
+    (cons (list :repeat (intern (symbol-name (second spec)) :keyword)))))
+
+(defmacro define-widget (type (&rest cells) &optional doc)
+  "Declare what TYPE's cells mean.  CELLS is a list of names, at most one of which may be
+(:repeat NAME) — the group that varies with the data.
+
+This is a CONTRACT, not a constructor: it does not wrap PRESENT, does not run per row, and
+costs nothing at pass time.  It exists so an encoding can dispatch on a declared type instead
+of inferring one from cell contents, and so the layout is written where the type is rather
+than in whichever client was written first."
+  (let ((repeats (count-if #'consp cells)))
+    (when (> repeats 1)
+      (error "warp: ~s declares ~d repeating groups; at most one is allowed, or a layout is ~
+              ambiguous from both ends and the wire would need a delimiter." type repeats))
+    `(progn
+       (setf (gethash ',type *widgets*)
+             (make-widget :type ',type
+                          :cells (mapcar #'%cell-name ',cells)
+                          :doc ,doc))
+       ',type)))
+
+(defun widget-of (type)
+  "TYPE's declaration, or NIL.  NIL is not an error: an undeclared type is an app that has not
+said what its cells mean, and an encoding should fall back to painting them as a plain row
+rather than refuse to draw it."
+  (gethash type *widgets*))
+
+(defun widget-cells (type)
+  (let ((w (widget-of type))) (and w (wg-cells w))))
+
+(defun widget-layout (type n)
+  "Resolve TYPE's declaration against a row of N cells: a list of N names, one per cell.
+
+This is what an encoding calls.  It answers in the units the encoding has — I am painting
+cell 3, what is it — so a table row and a heading go through the same code path and neither
+needs to know the other exists.  An undeclared type, or a row whose width cannot satisfy the
+declaration, answers NIL: the encoding paints a plain row, which is what every client did
+before any of this and is never worse than guessing."
+  (let ((cells (widget-cells type)))
+    (when cells
+      (let* ((rep-pos (position-if #'consp cells))
+             (fixed (if rep-pos (1- (length cells)) (length cells))))
+        (cond
+          ((null rep-pos) (when (= n fixed) (copy-list cells)))
+          ((< n fixed) nil)
+          (t (let* ((before (subseq cells 0 rep-pos))
+                    (after (subseq cells (1+ rep-pos)))
+                    (rep-name (second (nth rep-pos cells)))   ; already a keyword
+                    (rep-n (- n (length before) (length after))))
+               (append before (make-list rep-n :initial-element rep-name) after))))))))
+
+;;; ==================================================================================
+;;; THE CORE SET
+;;; ==================================================================================
+;;;
+;;; SMALL, AND CHOSEN BY WHAT FOUR CLIENTS ACTUALLY NEEDED rather than by what a toolkit
+;;; usually has.  There is no button here, no slider and no text field, because nothing in
+;;; warp has needed one yet: a command is reached by tapping a row or holding for a menu, so
+;;; the affordance is the ROW.  When warp-media's transport controls are lifted out of
+;;; media/model.lisp they will be the first genuine button and can be declared then — that is
+;;; "extract under load", and it is the right rule for compositions even though it is the
+;;; wrong rule for the base, which is why the base is here at all.
+;;;
+;;; Each of these is in use by a shipping client TODAY.  Nothing is declared speculatively.
+
+(define-widget menu-item (label cost tone)
+  "A command on an open hold-menu.  TONE is :destructive or :safe; COST is a cost class or NIL.
+Core's own, and the shape PROTOCOL.md §10.3 already fixed — every other line in this file is
+the argument for doing what this one line already did.")
+
+(define-widget row (value label trend)
+  "The default row: a number that leads, what it is, and how it is doing.  TREND is
+:ok / :warn / :bad.  This is the layout the reference client falls back to, declared so that
+falling back to it is a decision rather than an else-branch.  In use by warp-monitor.")
+
+(define-widget opaque (caption dimensions kind)
+  "A region the app offers only as pixels (rule 9).  KIND is the literal :OPAQUE, and it is
+the reason this file exists: the reference client detects an opaque node by testing whether
+the THIRD CELL says \"opaque\", which is a type inferred from a data slot.  Declared here so
+an encoding can switch on the presentation type and this cell can eventually go.  In use by
+warp-files (previews) and warp-media (the picture).")
+
+;;; ---- the document set, from client four ------------------------------------------
+;;; These arrived together because a compound document needed all of them at once, and they
+;;; are the first widgets in warp that are not a single flat row.
+
+(define-widget heading (text level)
+  "A section heading.  LEVEL is :h1 / :h2 / :h3 — a keyword rather than a number so a text
+encoding can print '##' without knowing that 2 meant anything.")
+
+(define-widget prose (text)
+  "A paragraph.  ONE cell, unwrapped: wrapping is the consumer's, because a pre-wrapped
+fingerprint would put the narrowest consumer's geometry into the shared result-set and every
+other consumer would re-render on a resize it does not care about (rule 2).")
+
+(define-widget table-head (corner (:repeat column) total)
+  "The heading row of a pivot: the row dimension's name, one heading per column, and the word
+for the total.  The first genuinely N-ARY widget, and the one that made the three-cell
+convention untenable.")
+
+(define-widget table-row (label (:repeat value) total)
+  "One row of a pivot.  The total is LAST and unlabelled — a positional convention INSIDE a
+declared type, which is the distinction that makes it tolerable where `cells[2] === \"opaque\"'
+is not: a consumer painting a TABLE-ROW knows the last cell is the total because that is this
+type's layout, and never has to guess it from the value.")
+
+(define-widget table-total (label value)
+  "The grand total under a pivot.")
+
+(define-widget chips ((:repeat chip))
+  "A row of chips — a drill path, a filter set, a breadcrumb.
+
+DECLARED WITH A KNOWN GAP: a gesture carries a key and no coordinates (§10.5), so a row of
+chips is tappable as a ROW and not per chip.  warp-quire's drill path can therefore only be
+popped whole.  The fix is not a coordinate; it is deciding whether a chip is a cell or a
+presentation, and that is an open question this declaration is deliberately not pretending to
+have answered.")
