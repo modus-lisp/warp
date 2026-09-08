@@ -177,6 +177,21 @@ window.T = {{
                  const e = document.querySelector('#appsMenu button[data-app="' + id + '"]');
                  if (!e || e.disabled) return false;
                  e.click(); return true; }},
+  // ---- full screen, and the strip that replaces the panel's edge ----------------------------
+  isFull: id => document.getElementById(id).classList.contains('full'),
+  rect: id => {{ const r = document.getElementById(id).getBoundingClientRect();
+                 return [Math.round(r.left), Math.round(r.top),
+                         Math.round(r.width), Math.round(r.height)]; }},
+  switchOn: () => document.getElementById('appSwitch').classList.contains('on'),
+  currentVisible: () => {{ const st = document.getElementById('appSwitch');
+                           const b = st.querySelector('[aria-current="true"]');
+                           if (!b) return false;
+                           const r = b.getBoundingClientRect(), s = st.getBoundingClientRect();
+                           return r.left >= s.left - 1 && r.right <= s.right + 1; }},
+  switchEntries: () => [...document.querySelectorAll('#appSwitch button')]
+                   .map(b => [b.dataset.app, b.getAttribute('aria-current') === 'true']),
+  tapSwitch: id => {{ const e = document.querySelector('#appSwitch button[data-app="' + id + '"]');
+                      if (!e) return false; e.click(); return true; }},
   openWarp:  () => T.pick('devices'),
   openFiles: () => T.pick('files'),
   // every fixed round button the page put on the row, by what it says it is
@@ -281,7 +296,9 @@ with sync_playwright() as pw:
     ok("one tap opens it", page.evaluate("T.openMenu()"))
     entries = page.evaluate("T.entries()")
     ok("with ONE ENTRY PER APP, each naming one known facet — no 'best available' anything",
-       [e[0] for e in entries] == ["devices", "files"], entries)
+       [e[0] for e in entries] == ["desktop", "devices", "files"], entries)
+    ok("and the DESKTOP is one of them, first — it is a destination, not the absence of one",
+       entries[0][0] == "desktop" and entries[0][2] is False, entries[0])
     ok("both are offered, because nothing has been asked yet and silence is the only evidence there is",
        all(e[2] is False for e in entries), entries)
     ok("opening the menu is still not a probe: it puts nothing on the wire",
@@ -502,6 +519,76 @@ with sync_playwright() as pw:
     print("     warp:  " + str(page.evaluate("T.warp().stats()")))
     print("     diag: " + str(page.evaluate("diagLog")))
 
+    # ---- full screen, and the strip that replaces the panel's edge ----------------------------
+    #
+    # A panel inset by fixed pixels is a window on a laptop and a hairline around the whole screen
+    # on a phone.  This viewport is 390x780, so the second thing is what it was: a 10px margin of
+    # "desktop" nobody can see or use, framing something that has already taken the screen.  The
+    # client measures what the panel WOULD cover and, past the threshold, stops pretending.
+    #
+    # The assertions below are about both halves of that -- the panel taking the screen, and the
+    # switcher appearing to carry what the panel's edge used to: a way to somewhere else.
+    print("== a panel that would cover the screen IS the screen ==")
+    page.evaluate("T.openWarp()")
+    page.wait_for_timeout(250)
+    ok("the device manager opened full screen on a phone-sized viewport",
+       page.evaluate("T.isFull('warpPanel')"))
+    x, y, w, h = page.evaluate("T.rect('warpPanel')")
+    ok("edge to edge, and starting below the switcher rather than under it",
+       x == 0 and w == 390 and y == 44 and h == 780 - 44, (x, y, w, h))
+    ok("the switcher is up", page.evaluate("T.switchOn()"))
+    ok("and it holds every app, the desktop among them, with the open one marked",
+       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", True], ["files", False]],
+       page.evaluate("T.switchEntries()"))
+
+    print("== switching, including back to the desktop, is one tap in the strip ==")
+    ok("the strip switches apps directly", page.evaluate("T.tapSwitch('files')"))
+    page.wait_for_timeout(250)
+    ok("the file browser is up and full, the device manager put away",
+       page.evaluate("T.isFull('filesPanel')")
+       and page.evaluate("T.warpVisible()") == "none"
+       and page.evaluate("T.filesVisible()") == "flex")
+    ok("and the strip now marks the file browser instead",
+       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", False], ["files", True]],
+       page.evaluate("T.switchEntries()"))
+    ok("and the chip that says where you are is not the one scrolled off the end",
+       page.evaluate("T.currentVisible()"))
+    ok("the desktop is reachable from the strip", page.evaluate("T.tapSwitch('desktop')"))
+    page.wait_for_timeout(250)
+    ok("choosing it puts every panel away — which is what showing the desktop MEANS",
+       page.evaluate("T.warpVisible()") == "none" and page.evaluate("T.filesVisible()") == "none")
+    ok("and the strip goes with them: nothing is full, so there is an edge again",
+       not page.evaluate("T.switchOn()"))
+
+    shotf = os.path.join(OUT, "warp-two-apps-fullscreen.png")
+    page.evaluate("T.openFiles()"); page.wait_for_timeout(500)
+    page.screenshot(path=shotf)
+    print("     screenshot (full screen):    " + shotf)
+
+    # ---- and the same client on a laptop, where a panel IS a panel -----------------------------
+    #
+    # The clause "if the view is not small compared to the desktop" has to be able to come out the
+    # other way, or it is not a rule, it is a constant.  Same code, same app, 1440x900: the cap in
+    # CSS makes the panel genuinely small against that viewport, so it floats and the desktop
+    # behind it is real.  If this ever asserts full, the threshold has stopped meaning anything.
+    print("== the same app, on a laptop, is a window again ==")
+    wide = browser.new_page(viewport={"width": 1440, "height": 900})
+    wide.goto(harness.as_uri())
+    wide.wait_for_timeout(600)
+    wide.evaluate("T.openWarp()")
+    wide.wait_for_timeout(400)
+    ok("it opened WINDOWED, not full", not wide.evaluate("T.isFull('warpPanel')"))
+    ok("no switcher, because the panel still has an edge to leave by",
+       not wide.evaluate("T.switchOn()"))
+    wx, wy, ww, wh = wide.evaluate("T.rect('warpPanel')")
+    ok("and it really is small against the screen — under half of it",
+       ww * wh < 0.5 * 1440 * 900, (ww, wh, round(ww * wh / (1440 * 900), 2)))
+    ok("centred, with desktop on both sides", wx > 0 and wx + ww < 1440, (wx, ww))
+    shotw = os.path.join(OUT, "warp-two-apps-windowed.png")
+    wide.screenshot(path=shotw)
+    print("     screenshot (windowed):       " + shotw)
+    wide.close()
+
     # ---- a box that does not serve the file browser -------------------------------------------
     #
     # WARP_FILES gates that app on its own and nothing announces the answer: the gateway drops the
@@ -514,7 +601,8 @@ with sync_playwright() as pw:
     page.goto(harness.as_uri())
     page.evaluate("window.dropApp = 'files'")
     ok("both apps are offered to begin with, because nothing has been asked",
-       page.evaluate("T.openMenu()") and [e[2] for e in page.evaluate("T.entries()")] == [False, False],
+       page.evaluate("T.openMenu()")
+       and [e[2] for e in page.evaluate("T.entries()")] == [False, False, False],
        page.evaluate("T.entries()"))
     ok("the device manager answers", page.evaluate("T.openWarp()"))
     page.wait_for_function("T.warpRows().length > 0", timeout=15000)
@@ -528,12 +616,15 @@ with sync_playwright() as pw:
        page.evaluate("T.filesNote()"))
     page.evaluate("T.tapApps()")
     entries = page.evaluate("T.openMenu() && T.entries()")
+    files_entry = next(e for e in entries if e[0] == "files")
     ok("and the menu has learnt it: the entry is struck out and cannot be picked",
-       entries[1][0] == "files" and entries[1][2] is True, entries)
+       files_entry[2] is True, entries)
     ok("captioned with why, BEFORE the tap rather than after it",
-       entries[1][3] == "not served by this box", entries)
+       files_entry[3] == "not served by this box", entries)
     ok("it is still LISTED, though — a client that asked and heard nothing may not claim the app "
-       "was never there", [e[0] for e in entries] == ["devices", "files"], entries)
+       "was never there", [e[0] for e in entries] == ["desktop", "devices", "files"], entries)
+    ok("and the desktop is never struck out — it is served by definition",
+       next(e for e in entries if e[0] == "desktop")[2] is False, entries)
     ok("picking it does nothing at all", page.evaluate("T.openFiles()") is False)
     ok("and the app that does answer is untouched",
        page.evaluate("T.openWarp()") and page.evaluate("T.warpRows()")[:2]
