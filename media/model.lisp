@@ -207,8 +207,15 @@ ordinary presentation — the protocol carries no coordinates and does not need 
 
 (defmethod present ((b media-button) (type (eql 'media-control)) (view (eql 'media-view)))
   (let ((p (library-player (button-library b))))
+    ;; ICON NAMES, NOT ASCII.  A glyph cell may be a string -- and was, for the whole life of
+    ;; this app -- or a KEYWORD naming an icon in warp's set.  An encoding that draws vectors
+    ;; draws one; a text consumer prints the icon's own fallback, which is the ASCII this used to
+    ;; send.  So nothing is lost on the encoding that had it right already.
     (list (ecase (button-kind b)
-            (:prev "|<") (:toggle (if (eq (player-state p) :playing) "||" ">")) (:next ">|") (:stop "[]"))
+            (:prev :prev)
+            (:toggle (if (eq (player-state p) :playing) :pause :play))
+            (:next :next)
+            (:stop :stop))
           (button-kind b))))
 
 (defmethod present ((c seek-cell) (type (eql 'media-seek)) (view (eql 'media-view)))

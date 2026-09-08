@@ -114,6 +114,15 @@ and there is nowhere else to put the distinction."
 ;;; one to answer in a demo.
 (define-widget cat-menu (label cost tone))
 
+;;; The icon sheet shows each icon WITH its name, which a plain BUTTON cannot: a button is a
+;;; glyph and what it does, and here the name IS the interesting half -- you are looking up what
+;;; to call it.
+(define-widget cat-icon (glyph label))
+
+(defmethod present ((s sample) (type (eql 'cat-icon)) (view (eql 'catalogue-view)))
+  (sample-cells s))
+(define-presentation-key cat-icon (s) (sample-id s))
+
 (defmethod present ((s sample) (type (eql 'cat-menu)) (view (eql 'catalogue-view)))
   (sample-cells s))
 (define-presentation-key cat-menu (s) (sample-id s))
@@ -138,12 +147,15 @@ and there is nowhere else to put the distinction."
      (("1.2 GB" "memory in use" :ok)
       ("87%" "cache hit rate" :warn)
       ("14" "sessions refused" :bad)))
+    (cat-icon        "every icon warp has.  path data, shared by all three encodings"
+     ,(mapcar (lambda (n) (list n (string-downcase (symbol-name n)))) (warp:icon-names)))
     (warp:entry      "a name that leads, a secondary fact, and which kind it is"
      (("Documents" "12 items" :dir)
       ("report.pdf" "2.4 MB" :file)
       ("~/work" "4 tracks, 2 folders" :head)))
-    (warp:button     "a mark to touch, and what it means"
-     (("|<" :prev) ("||" :toggle) (">|" :next) ("[]" :stop)))
+    (warp:button     "a mark to touch.  the glyph may be a string, or a keyword naming an icon"
+     ((:prev :prev) (:play :toggle) (:next :next) (:stop :stop)
+      ("|<" :prev)))   ; and a literal string still works, which is what media sent for a year
     (warp:meter      "ONE segment of a bar.  a second of playback changes at most one"
      ((:filled) (:filled) (:filled) (:head) (:empty) (:empty) (:empty) (:empty)))
     (warp:chip       "one step of a path.  a presentation, so it is tappable on its own"

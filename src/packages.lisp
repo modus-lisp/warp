@@ -7,6 +7,8 @@
    ;; presentations
    #:command-values #:command-current #:command-prompt #:cmd-prompt
    #:define-widget #:widget-of #:widget-cells #:widget-layout
+   ;; icons: path data, shared by every encoding.  A glyph cell may be a keyword naming one.
+   #:define-icon #:icon #:icon-name #:icon-path #:icon-mode #:icon-fallback #:icon-names
    ;; THE CORE SET, BY NAME.  Exported because a vocabulary you cannot name is not a
    ;; vocabulary: an app declaring its own type wants to say "this is a BUTTON", and a test or
    ;; an encoding wants to compare against the shape core means.  The registry is keyed by

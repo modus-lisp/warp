@@ -82,7 +82,11 @@
   /* ---- button: a mark to touch.  Sized by its glyph, not stretched to a row. */
   #rows li.button { display: inline-flex; width: auto; border: 0; background: #222c38;
                     border-radius: 8px; margin: 4px 6px; padding: 6px 14px; cursor: pointer; }
-  #rows li.button .g { font-size: 16px; letter-spacing: .06em; }
+  #rows li.button .g { font-size: 16px; letter-spacing: .06em; display: inline-flex;
+                       align-items: center; }
+  /* An icon is sized in EM so it follows the text it sits beside, and coloured by
+     currentColor so a kind's colour reaches the path without a second rule. */
+  #rows li .icon { width: 1.15em; height: 1.15em; display: block; }
   #rows li.button.k-stop .g { color: #f08080; }
   /* A container of buttons lays them in a row -- warp-media's transport, and the same
      container-decides-layout rule the chips strip uses. */
@@ -104,6 +108,13 @@
   #rows li.field .val { margin-left: auto; color: #dce4ec; }
   #rows li.field.empty .val { color: #6a747c; font-style: italic; }
   #menu li.prompt { border-left-color: #b48ead; }
+  #rows li.iconcell { display: inline-flex; flex-direction: column; align-items: center;
+      gap: 6px; width: 84px; border: 0; background: transparent; padding: 10px 4px; }
+  #rows li.iconcell .g { color: #dce4ec; }
+  #rows li.iconcell .icon { width: 22px; height: 22px; }
+  #rows li.iconcell .n { color: #8a949c; font-size: 10px; }
+  #rows .container[data-container^="s:cat-icon"] { display: flex; flex-wrap: wrap;
+      padding: 6px 10px; }
   #rows li.menusample { background: #222c38; border-left-color: #dce4ec; }
   #rows li.menusample.destructive { background: #3a1c1c; border-left-color: #f04646;
                                     color: #ffb0b0; }

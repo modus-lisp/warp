@@ -266,6 +266,7 @@ function makeWarpClient(opts) {
     "cat-head":        {fixed: ["text", "level"]},
     "cat-note":        {fixed: ["text"]},
     "cat-menu":        {fixed: ["label", "cost", "tone"]},
+    "cat-icon":        {fixed: ["glyph", "label"]},
   };
 
   // Resolve a declaration against an actual row: n names, one per cell, or null when the type is
@@ -280,11 +281,76 @@ function makeWarpClient(opts) {
     return w.before.concat(new Array(n - fixed).fill(w.repeat), w.after);
   }
 
+  // ---- icons: the same path data src/icons.lisp holds ------------------------------------
+  //
+  // MIRRORED, like the widget table, and for the same reason: a client draws what it has a
+  // renderer for, so an icon it has never heard of is one it could not draw even if it were sent
+  // the path.  What it does instead is print the glyph as text -- which is what every client did
+  // before icons existed, and is exactly right for a consumer with no geometry.
+  //
+  // t/icons.lisp asserts the two tables carry the same names, so this cannot quietly drift.
+  const ICONS = {
+    play:          {d: "M8 5v14l11-7z", fill: true},
+    pause:         {d: "M6 5h4v14H6z M14 5h4v14h-4z", fill: true},
+    stop:          {d: "M6 6h12v12H6z", fill: true},
+    prev:          {d: "M7 5h2v14H7z M20 5v14l-10-7z", fill: true},
+    next:          {d: "M15 5h2v14h-2z M4 5l10 7-10 7z", fill: true},
+    "chevron-right": {d: "M9 5l7 7-7 7"},
+    "chevron-left":  {d: "M15 5l-7 7 7 7"},
+    "chevron-down":  {d: "M5 9l7 7 7-7"},
+    "chevron-up":    {d: "M5 15l7-7 7 7"},
+    close:         {d: "M6 6l12 12 M18 6L6 18"},
+    check:         {d: "M4 12l5 6L20 6"},
+    plus:          {d: "M12 5v14 M5 12h14"},
+    minus:         {d: "M5 12h14"},
+    folder:        {d: "M3 6h6l2 2h10v11H3z"},
+    file:          {d: "M6 3h8l4 4v14H6z M14 3v4h4"},
+    trash:         {d: "M5 7h14 M9 7V5h6v2 M7 7l1 13h8l1-13"},
+  };
+
+  // A glyph cell is a STRING drawn as text, as it always was, or a KEYWORD naming an icon.
+  //
+  // TOLD APART BY LOOKUP, NOT BY SYNTAX.  The first attempt tested for a leading colon, on the
+  // assumption that %JSON-WRITE renders :PLAY as ":play" -- it does not, it renders "play", so
+  // the test never fired and every button drew its name as text.  Looking the string up in the
+  // table is simpler and has a better failure mode: an unknown glyph is drawn, which is exactly
+  // what a literal like "|<" wants.
+  //
+  // The cost is that a literal glyph spelled "play" gets the play icon.  That is a collision
+  // worth having: an app that writes "play" in a glyph cell means the play icon.
+  function iconEl(glyph) {
+    if (typeof glyph !== "string") return null;
+    const ico = ICONS[glyph.toLowerCase()];
+    if (!ico) return null;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "icon");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", ico.d);
+    if (ico.fill) { path.setAttribute("fill", "currentColor"); }
+    else { path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor");
+           path.setAttribute("stroke-width", "2"); path.setAttribute("stroke-linecap", "round");
+           path.setAttribute("stroke-linejoin", "round"); }
+    svg.appendChild(path);
+    return svg;
+  }
+
   function paint(li, d) {
     const cells = d.cells || [];
     const names = layoutOf(d.type, cells.length);
     const at = (name) => { const i = names ? names.indexOf(name) : -1;
                            return i < 0 ? null : cells[i]; };
+
+    if (d.type === "cat-icon") {
+      li.className = "iconcell";
+      li.innerHTML = "";
+      const svg = iconEl(at("glyph"));
+      const g = document.createElement("span"); g.className = "g";
+      if (svg) g.appendChild(svg); else g.textContent = String(at("glyph"));
+      li.append(g, cell("n", at("label")));
+      return;
+    }
 
     if (d.type === "cat-menu") {
       li.className = at("tone") === "destructive" ? "menusample destructive" : "menusample";
@@ -348,7 +414,10 @@ function makeWarpClient(opts) {
     if (d.type === "button" || d.type === "media-control") {
       li.className = "button k-" + String(at("kind") ?? "").replace(/^:/, "");
       li.innerHTML = "";
-      li.append(cell("g", at("glyph")));
+      const svg = iconEl(at("glyph"));
+      if (svg) { const s = document.createElement("span"); s.className = "g"; s.appendChild(svg);
+                 li.append(s); }
+      else li.append(cell("g", at("glyph")));
       return;
     }
 
