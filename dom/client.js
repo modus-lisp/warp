@@ -237,6 +237,9 @@ function makeWarpClient(opts) {
     "table-row":       {before: ["label"],  repeat: "value",  after: ["total"]},
     "table-total":     {fixed: ["label", "value"]},
     "chip":            {fixed: ["label"]},
+    "entry":           {fixed: ["label", "detail", "tag"]},
+    "button":          {fixed: ["glyph", "kind"]},
+    "meter":           {fixed: ["state"]},
     // The document client's own types map onto those kinds.  An app declares this in Lisp with
     // DEFINE-WIDGET; here it is the same statement in the encoding that has to draw it.
     "heading-row":     {fixed: ["text", "level"]},
@@ -245,6 +248,20 @@ function makeWarpClient(opts) {
     "slice-data-row":  {before: ["label"],  repeat: "value",  after: ["total"]},
     "slice-total-row": {fixed: ["label", "value"]},
     "crumb-chip":      {fixed: ["label"]},
+    // warp-files and warp-media both present ENTRY under their own names, and warp-media's
+    // controls are core's BUTTON and METER.  Listing them here is what the catalogue found
+    // missing: declared in Lisp, unpaintable in the browser, falling silently through to the
+    // three-cell row.
+    "fs-head":         {fixed: ["label", "detail", "tag"]},
+    "fs-dir":          {fixed: ["label", "detail", "tag"]},
+    "fs-file":         {fixed: ["label", "detail", "tag"]},
+    "media-head":      {fixed: ["label", "detail", "tag"]},
+    "media-dir":       {fixed: ["label", "detail", "tag"]},
+    "media-track":     {fixed: ["label", "detail", "tag"]},
+    "media-control":   {fixed: ["glyph", "kind"]},
+    "media-seek":      {fixed: ["state"]},
+    "cat-head":        {fixed: ["text", "level"]},
+    "cat-note":        {fixed: ["text"]},
   };
 
   // Resolve a declaration against an actual row: n names, one per cell, or null when the type is
@@ -292,7 +309,37 @@ function makeWarpClient(opts) {
       return;
     }
 
-    if (d.type === "heading" || d.type === "heading-row") {
+    if (d.type === "entry" || d.type === "fs-head" || d.type === "fs-dir" ||
+        d.type === "fs-file" || d.type === "media-head" || d.type === "media-dir" ||
+        d.type === "media-track") {
+      // A NAME THAT LEADS.  The tag is the app's own keyword and an encoding that does not
+      // recognise one styles the row plainly -- which is why adding a kind needs no client edit.
+      const tag = String(at("tag") ?? "").replace(/^:/, "");
+      li.className = "entry" + (tag ? " " + tag : "") +
+                     ((d.state && d.state.selected) ? " selected" : "");
+      li.innerHTML = "";
+      li.append(cell("n", at("label")));
+      if (at("detail")) li.append(cell("d", at("detail")));
+      return;
+    }
+
+    if (d.type === "button" || d.type === "media-control") {
+      li.className = "button k-" + String(at("kind") ?? "").replace(/^:/, "");
+      li.innerHTML = "";
+      li.append(cell("g", at("glyph")));
+      return;
+    }
+
+    if (d.type === "meter" || d.type === "media-seek") {
+      // ONE SEGMENT.  The state is the whole cell, and the segment carries no text at all --
+      // a bar made of words would be a list, which is what this looked like before the client
+      // knew what a meter was.
+      li.className = "seg s-" + String(at("state") ?? "empty").replace(/^:/, "");
+      li.innerHTML = "";
+      return;
+    }
+
+    if (d.type === "heading" || d.type === "heading-row" || d.type === "cat-head") {
       const lvl = String(at("level") || "h2").replace(/^:/, "");
       li.className = "heading " + lvl;
       li.innerHTML = "";
@@ -300,7 +347,7 @@ function makeWarpClient(opts) {
       return;
     }
 
-    if (d.type === "prose" || d.type === "prose-row") {
+    if (d.type === "prose" || d.type === "prose-row" || d.type === "cat-note") {
       li.className = "prose";
       li.innerHTML = "";
       li.append(cell("p", at("text")));

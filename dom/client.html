@@ -72,6 +72,35 @@
       border-radius: 12px; padding: 3px 12px; cursor: pointer; }
   #rows .container[data-container^="crumbs:"] li.chip.selected { background: #2b6cb0; }
   #rows li.chip .t { font-size: 12px; color: #dce4ec; }
+  /* ---- entry: a name that leads.  The tag colours the rule, so a folder and a file are
+     distinguishable at a glance without the client knowing what either means. */
+  #rows li.entry { border-left-color: #4a5a6a; }
+  #rows li.entry.dir, #rows li.entry.head, #rows li.entry.up { border-left-color: #9fd8ff; }
+  #rows li.entry.file, #rows li.entry.track { border-left-color: #5abe82; }
+  #rows li.entry .n { font-size: 14px; }
+  #rows li.entry .d { margin-left: auto; color: #8a949c; font-size: 12px; }
+  /* ---- button: a mark to touch.  Sized by its glyph, not stretched to a row. */
+  #rows li.button { display: inline-flex; width: auto; border: 0; background: #222c38;
+                    border-radius: 8px; margin: 4px 6px; padding: 6px 14px; cursor: pointer; }
+  #rows li.button .g { font-size: 16px; letter-spacing: .06em; }
+  #rows li.button.k-stop .g { color: #f08080; }
+  /* A container of buttons lays them in a row -- warp-media's transport, and the same
+     container-decides-layout rule the chips strip uses. */
+  #rows .container[data-container^="s:button"],
+  #rows .container[data-container^="transport"] { display: flex; flex-wrap: wrap;
+                                                  padding: 4px 8px; }
+  /* ---- meter: one segment, and NO TEXT.  A bar made of words is a list. */
+  #rows li.seg { display: inline-block; width: 26px; height: 10px; padding: 0; margin: 0 1px;
+                 border: 0; border-radius: 2px; background: #222c38; }
+  #rows li.seg.s-filled { background: #5abe82; }
+  #rows li.seg.s-head { background: #9fd8ff; }
+  #rows .container[data-container^="s:meter"],
+  #rows .container[data-container^="seek"] { display: flex; align-items: center;
+                                             padding: 10px 14px; }
+  #rows .container[data-container^="s:chip"] { display: flex; flex-wrap: wrap; gap: 8px;
+                                               padding: 8px 14px; }
+  #rows .container[data-container^="s:chip"] li.chip { background: #222c38; border: 0;
+      border-radius: 12px; padding: 3px 12px; }
   #menu { list-style: none; margin: 0; padding: 0; position: absolute; width: 240px;
           box-shadow: 0 8px 24px #0008; }
   #menu:empty { display: none; }
