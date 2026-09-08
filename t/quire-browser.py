@@ -103,6 +103,32 @@ with sync_playwright() as pw:
         " return c ? getComputedStyle(c).display : null})()")
     ok("and they sit in a container the client lays out as a row", strip == "flex", strip)
 
+    # ---- the manipulative core: hold a header, tap a value -------------------------
+    page.evaluate("(() => {const c = document.querySelector("
+                  "  '#rows .container[data-container=\"part:pivot\"]');"
+                  " warp.hold(c.querySelector('li.thead').dataset.key)})()")
+    page.wait_for_function("document.querySelectorAll('#menu li').length > 3", timeout=10000)
+    items = page.evaluate("[...document.querySelectorAll('#menu li')].map(li => li.textContent)")
+    ok("holding the pivot header opened a menu of VALUES", len(items) > 8, len(items))
+    ok("the cube's measures are on it", any("orders" in t for t in items), items[:6])
+    # LIVE-NESS IS STATE, not a cell — the same rule as `selected' on a row.
+    live = page.evaluate("[...document.querySelectorAll('#menu li.live')].map(li => li.textContent)")
+    ok("the value currently set is marked, and only it", len(live) == 2, live)
+
+    key = page.evaluate("[...document.querySelectorAll('#menu li')]"
+                        ".filter(li => li.textContent.includes('orders'))[0].dataset.key")
+    page.evaluate(f"warp.tap({key!r})")
+    page.wait_for_function(
+        "(() => {const c = document.querySelector('#rows .container[data-container=\"part:pivot\"]');"
+        " const li = c.querySelector('li.trow:not(.thead)');"
+        " return li && !li.textContent.includes('k')})()", timeout=10000)
+    after = page.evaluate(
+        "(() => {const c = document.querySelector('#rows .container[data-container=\"part:pivot\"]');"
+        " const li = c.querySelector('li.trow:not(.thead)');"
+        " return [...li.querySelectorAll('.td')].map(s => s.textContent)})()")
+    ok("tapping a value changed what the pivot measures", after[-1] == "6", after)
+    ok("and the menu closed", page.evaluate("document.querySelectorAll('#menu li').length") == 0)
+
     page.screenshot(path=SHOT, full_page=True)
     print(f"     screenshot: {SHOT}")
     browser.close()

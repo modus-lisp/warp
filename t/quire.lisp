@@ -164,6 +164,55 @@ or the reader has to reconstruct it from the source."
     (ok "and kept it rather than undoing it — tapping North means show me North"
         (= 1 (length (slice-filter sl))))))
 
+;;; ---- 6. the manipulative core: a hold offers VALUES, a tap sets one -------------
+(format t "~&~%-- 6. changing a parameter from a touch screen --~%")
+
+(let* ((head (find-if (lambda (r) (and (typep r 'slice-head-row)
+                                       (string= (part-id (row-part r)) "pivot")))
+                      (document-rows *doc*)))
+       (sl (part-slice (doc-part *doc* "pivot")))
+       (cmd (warp:find-command 'set-measure))
+       (choices (warp:command-values cmd head)))
+  (ok "the head row offers a measure picker" (not (null choices)))
+  (ok "its choices come from the CUBE, not from a hand-written list"
+      (= (length choices) (length (cube-measures (doc-cube *doc*)))) (length choices))
+  (ok "and it knows which one is live now"
+      (equal (warp:command-current cmd head) (slice-measure sl))
+      (warp:command-current cmd head))
+
+  ;; A HOLD, then a TAP on one of the values — the whole interaction, in rule 5's vocabulary.
+  ;;
+  ;; FOUND BY TYPE, NOT BY IDENTITY: DOCUMENT-ROWS builds fresh row objects every call (it is the
+  ;; result-set, re-run each epoch), so an object from one call is never EQ to the "same" row from
+  ;; the next.  Matching on EQ silently found nothing and the gesture landed on empty space.
+  (let ((p (find-if (lambda (p)
+                      (and (eq (warp::p-type p) 'slice-head-row)
+                           (string= "pivot" (part-id (row-part (warp::p-object p))))))
+                    (warp::lay-out *seat* (document-rows *doc*) 0))))
+    (ok "found the pivot's head row as a presentation" (not (null p)))
+    (warp:on-gesture *seat* :hold p))
+  (let* ((items (warp:menu-presentations *seat*))
+         (kinds (remove-duplicates (mapcar (lambda (p) (warp::mi-kind (warp::p-object p))) items))))
+    (ok "holding opened a menu of choices, not of verbs" (member :choice kinds) kinds)
+    (ok "one item per measure, per axis, plus cancel" (> (length items) 8) (length items))
+    (let* ((orders (find-if (lambda (p)
+                              (let ((it (warp::p-object p)))
+                                (and (eq (warp::mi-kind it) :choice)
+                                     (equal (warp::mi-value it) "orders"))))
+                            items)))
+      (ok "found the `orders' choice on the menu" (not (null orders)))
+      (warp:on-gesture *seat* :tap orders)
+      (ok "tapping it set the measure — one command, one value, no command-per-measure"
+          (equal "orders" (slice-measure sl)) (slice-measure sl))
+      (ok "and the menu closed" (null (warp:menu-presentations *seat*)))))
+
+  ;; and the numbers actually changed
+  (let* ((row (find-if (lambda (r) (and (typep r 'slice-data-row)
+                                        (string= (part-id (row-part r)) "pivot")))
+                       (document-rows *doc*))))
+    (ok "the slice now reports counts, not sums"
+        (string= "6" (data-total row)) (data-total row))))
+
 ;;; ================================================================================
 (format t "~&~%== ~[all checks passed~:;~:*~d FAILED~] ==~%~%" *fails*)
 (sb-ext:exit :code (if (zerop *fails*) 0 1))

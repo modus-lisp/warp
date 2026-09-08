@@ -79,6 +79,10 @@
              border-bottom: 1px solid #0c0e12; display: flex; gap: 10px; cursor: pointer; }
   #menu li.destructive { background: #3a1c1c; border-left-color: #f04646; color: #ffb0b0; }
   #menu li .c { margin-left: auto; color: #8a949c; font-size: 10px; }
+  /* The choice that is currently set.  It arrives as STATE (rule 7), like `selected' on a row,
+     because live-ness is this consumer's view of the value and not part of the value. */
+  #menu li.live { border-left-color: #5abe82; }
+  #menu li.live .t::after { content: " ✓"; color: #5abe82; }
 </style>
 
 <header>

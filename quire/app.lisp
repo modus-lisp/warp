@@ -66,33 +66,56 @@
 
 (define-default-command 'crumb-chip 'quire-view 'pop-to)
 
-;;; ---- pivoting ---------------------------------------------------------------------
-;;; On the HEAD row, because that is where the axes are, and a hold there is the closest thing
-;;; this vocabulary has to "grab a dimension".
+;;; ---- the parameters, as pickers ----------------------------------------------------
+;;; FOUR COMMANDS BECAME TWO, and that is the measurement rather than the tidy-up.  Setting a
+;;; measure used to need one command per measure -- MEASURE-SUM, MEASURE-COUNT -- because a
+;;; command could not carry a value, so the cube's four measures would have been four commands
+;;; and a fifth measure would have been a fifth.  A parameter with ten values does not survive
+;;; that, and a parameter over the DATA (filter to any region) cannot be written at all.
+;;;
+;;; A picker is the same hold-menu rule 5 already had.  What changed is that the menu lists
+;;; VALUES, and the tap carries the one that was tapped.
 
-(define-command (measure-sum :arg-type slice-head-row :cost :local :label "measure: amount")
-    (r invoker)
+(define-command (set-measure :arg-type slice-head-row :cost :local :label "measure"
+                             ;; The choices come from the CUBE, so adding a measure to the model
+                             ;; adds it to every menu with no UI edit anywhere.  That is the
+                             ;; property a command-per-value cannot have.
+                             :values (lambda (r) (declare (ignore r))
+                                       (mapcar (lambda (m) (cons (car m) (car m)))
+                                               (cube-measures (doc-cube *document*))))
+                             :current (lambda (r) (slice-measure (part-slice (row-part r)))))
+    (r invoker value)
   (declare (ignore invoker))
-  (setf (slice-measure (part-slice (row-part r))) "amount") (list :measure "amount"))
+  (setf (slice-measure (part-slice (row-part r))) value)
+  (list :measure value))
 
-(define-command (measure-count :arg-type slice-head-row :cost :local :label "measure: orders")
-    (r invoker)
+(define-command (set-columns :arg-type slice-head-row :cost :local :label "columns"
+                             :values (lambda (r)
+                                       ;; every dimension the rows are not already grouped by,
+                                       ;; plus the way back to a plain list
+                                       (let ((rows-by (slice-rows-by (part-slice (row-part r)))))
+                                         (cons (cons nil "(none)")
+                                               (loop for (name . nil) in (cube-dims
+                                                                          (doc-cube *document*))
+                                                     unless (equal name rows-by)
+                                                       collect (cons name name)))))
+                             :current (lambda (r) (slice-cols-by (part-slice (row-part r)))))
+    (r invoker value)
   (declare (ignore invoker))
-  (setf (slice-measure (part-slice (row-part r))) "orders") (list :measure "orders"))
+  (setf (slice-cols-by (part-slice (row-part r))) value)
+  (list :columns value))
 
-(define-command (pivot-region :arg-type slice-head-row :cost :local :label "columns: region")
-    (r invoker)
+(define-command (set-rows :arg-type slice-head-row :cost :local :label "rows"
+                          :values (lambda (r)
+                                    (let ((cols-by (slice-cols-by (part-slice (row-part r)))))
+                                      (loop for (name . nil) in (cube-dims (doc-cube *document*))
+                                            unless (equal name cols-by)
+                                              collect (cons name name))))
+                          :current (lambda (r) (slice-rows-by (part-slice (row-part r)))))
+    (r invoker value)
   (declare (ignore invoker))
-  (let ((sl (part-slice (row-part r))))
-    (setf (slice-cols-by sl) (if (equal (slice-cols-by sl) "region") nil "region")))
-  (list :pivot "region"))
-
-(define-command (pivot-quarter :arg-type slice-head-row :cost :local :label "columns: quarter")
-    (r invoker)
-  (declare (ignore invoker))
-  (let ((sl (part-slice (row-part r))))
-    (setf (slice-cols-by sl) (if (equal (slice-cols-by sl) "quarter") nil "quarter")))
-  (list :pivot "quarter"))
+  (setf (slice-rows-by (part-slice (row-part r))) value)
+  (list :rows value))
 
 ;;; ---- the document under the cursor -------------------------------------------------
 ;;; ONE DOCUMENT PER IMAGE, because a command's arguments are a row and an invoker and neither

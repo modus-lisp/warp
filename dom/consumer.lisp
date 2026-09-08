@@ -138,12 +138,19 @@ rules 5 and 6 and reimplementing them here is the second enforcement point rule 
               (prev nil))
           (loop for it in items
                 for key = (presentation-key 'menu-item it)
-                collect (prog1 (make-presentation
-                                :key key :type 'menu-item :object it
-                                :extent (cons container prev)
-                                :fingerprint (present it 'menu-item (consumer-view c))
-                                :as-of (now-tick))
-                          (setf prev key))))))))
+                collect (let ((p (make-presentation
+                                  :key key :type 'menu-item :object it
+                                  :extent (cons container prev)
+                                  :fingerprint (present it 'menu-item (consumer-view c))
+                                  :as-of (now-tick))))
+                          ;; WHICH CHOICE IS LIVE IS STATE (rule 7), and this method has to say so
+                          ;; itself: it overrides core's MENU-PRESENTATIONS to make the positional
+                          ;; claim, so anything core's version sets is not inherited.  Overriding
+                          ;; for one field and silently dropping another is the failure mode, and
+                          ;; it is the one this had.
+                          (when (mi-live it) (setf (p-state p) (list :live t)))
+                          (setf prev key)
+                          p)))))))
 
 ;;; ---- serialization, and therefore cost --------------------------------------
 
@@ -359,7 +366,16 @@ consumer over the same projection is not disturbed by any of it."
                                      :test #'string-equal))))
          (cond
            ((or (null cmd) (null p)) (values :refused (list name key)))
-           (t (run-command c cmd (p-object p) :confirmed (eq t (json-get msg "confirmed")))
-              (values :invoked (consumer-last-result c))))))
+           (t
+            ;; A PICKER'S VALUE RIDES THE SAME MESSAGE.  `value' is only passed when the command
+            ;; declares choices -- INVOKE refuses a value on a command that takes none, and this
+            ;; path must not turn that refusal into a silent run of the verb.
+            (if (cmd-values-fn cmd)
+                (run-command c cmd (p-object p)
+                             :confirmed (eq t (json-get msg "confirmed"))
+                             :value (json-get msg "value"))
+                (run-command c cmd (p-object p)
+                             :confirmed (eq t (json-get msg "confirmed"))))
+            (values :invoked (consumer-last-result c))))))
 
       (t (values :ignored type)))))

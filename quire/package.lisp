@@ -27,6 +27,6 @@
    #:crumb-chip #:chip-clause #:chip-depth
    ;; the app
    #:quire-view #:quire-projection #:*document*
-   #:drill-into #:pop-to #:measure-sum #:measure-count #:pivot-region #:pivot-quarter
+   #:drill-into #:pop-to #:set-measure #:set-columns #:set-rows
    ;; the fixture
    #:example-cube #:example-document))

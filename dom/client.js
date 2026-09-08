@@ -266,7 +266,10 @@ function makeWarpClient(opts) {
                            return i < 0 ? null : cells[i]; };
 
     if (d.type === "menu-item") {
-      li.className = at("tone") === "destructive" ? "destructive" : "";
+      // `live' is STATE, not a cell: which value is currently set is this consumer's view of the
+      // choice, not part of the choice's content.  See the note in src/menu.lisp.
+      li.className = (at("tone") === "destructive" ? "destructive" : "") +
+                     ((d.state && d.state.live) ? " live" : "");
       li.innerHTML = "";
       li.append(cell("t", at("label")));
       if (at("cost")) li.append(cell("c", at("cost")));

@@ -23,13 +23,21 @@
 (in-package #:warp)
 
 (defstruct (menu-item (:conc-name mi-))
-  kind        ; :command | :confirm | :cancel
+  kind        ; :command | :confirm | :cancel | :choice
   command     ; the COMMAND object (nil for :cancel)
-  target)     ; the domain object it would act on
+  target      ; the domain object it would act on
+  ;; ---- for :choice, the picker's half -------------------------------------------------
+  value       ; the value this item would set
+  vlabel      ; how to write it
+  (live nil)) ; T when it is what is set now
 
 (define-presentation-key menu-item (m)
-  (format nil "menu:~(~a~):~a" (mi-kind m)
-          (if (mi-command m) (cmd-name (mi-command m)) "cancel")))
+  ;; A CHOICE'S KEY CARRIES ITS VALUE, because a picker puts several items on one menu for one
+  ;; command and they must not collide.  The plain case is unchanged, which matters: PROTOCOL.md
+  ;; documents `menu:<kind>:<command|cancel>' and every existing client keys on it.
+  (format nil "menu:~(~a~):~a~@[:~a~]" (mi-kind m)
+          (if (mi-command m) (cmd-name (mi-command m)) "cancel")
+          (and (eq (mi-kind m) :choice) (mi-vlabel m))))
 
 (defmethod present ((m menu-item) (type (eql 'menu-item)) view)
   (declare (ignorable view))
@@ -37,6 +45,16 @@
     (ecase (mi-kind m)
       (:command (list (cmd-label c) (cmd-cost c)
                       (if (cmd-destructive c) :destructive :safe)))
+      ;; A CHOICE READS AS THE VALUE, not as the command: on a menu of measures the items are
+      ;; "amount" and "orders", not "measure: amount" twice.  The command's label is on the
+      ;; CONTROL that opened the menu, which is where the question belongs.
+      ;;
+      ;; WHICH ONE IS LIVE IS NOT A CELL.  It was, for one commit -- :LIVE in the COST slot --
+      ;; and that is precisely the overloading the widget declarations exist to end: a slot
+      ;; whose meaning depends on what is in it.  Live-ness is not part of the choice's content,
+      ;; it is this consumer's view of it, which is what P-STATE is for (rule 7) and is
+      ;; EQUAL-compared exactly like a fingerprint.
+      (:choice  (list (mi-vlabel m) (cmd-cost c) :safe))
       (:confirm (list (format nil "really ~a?" (cmd-label c)) :confirm :destructive))
       (:cancel  (list "cancel" nil :safe)))))
 
@@ -55,21 +73,42 @@ budgeted deltas and a browser or a model places it however it places anything el
       (destructuring-bind (&key target items) m
         (declare (ignore target))
         (loop for it in items
-              collect (make-presentation
-                       :key (presentation-key 'menu-item it)
-                       :type 'menu-item :object it
-                       :extent nil
-                       :fingerprint (present it 'menu-item (consumer-view c))
-                       :as-of (now-tick)))))))
+              collect (let ((p (make-presentation
+                                :key (presentation-key 'menu-item it)
+                                :type 'menu-item :object it
+                                :extent nil
+                                :fingerprint (present it 'menu-item (consumer-view c))
+                                :as-of (now-tick))))
+                        ;; Rule 7: this consumer's view state, on this consumer's presentation.
+                        ;; Two seats holding the same menu can disagree about which value is
+                        ;; live if they are looking at different objects, and neither is told
+                        ;; about the other's.
+                        (when (mi-live it) (setf (p-state p) (list :live t)))
+                        p))))))
+
+(defun %items-for (cmd object)
+  "One menu item for a verb; one per choice for a picker.
+
+THIS IS THE WHOLE OF THE MANIPULATIVE CORE AT THE MENU LAYER.  A parameter does not need a new
+gesture, a new delta kind or a coordinate -- it needs the menu that HOLD already opens to list
+values instead of verbs, and rule 5's tap to carry the one that was tapped."
+  (let ((choices (command-values cmd object)))
+    (if (null choices)
+        (list (make-menu-item :kind :command :command cmd :target object))
+        (let ((now (command-current cmd object)))
+          (loop for (v . label) in choices
+                collect (make-menu-item :kind :choice :command cmd :target object
+                                        :value v
+                                        :vlabel (or label (format nil "~a" v))
+                                        :live (and now (equal now v))))))))
 
 (defun open-menu (c target commands)
   "Rule 5: hold lists the applicable commands.  TARGET is the presentation held, kept because an
 encoding will want to place the menu relative to it."
   (setf (consumer-menu c)
         (list :target target
-              :items (append (mapcar (lambda (cmd) (make-menu-item :kind :command :command cmd
-                                                                   :target (p-object target)))
-                                     commands)
+              :items (append (loop for cmd in commands
+                                   append (%items-for cmd (p-object target)))
                              (list (make-menu-item :kind :cancel))))))
 
 (defun confirm-menu (c target command)
@@ -83,12 +122,16 @@ encoding will want to place the menu relative to it."
 
 ;;; ---- invocation: the surface never second-guesses the policy -------------------
 
-(defun run-command (c command object &key confirmed)
+(defun run-command (c command object &key confirmed (value nil value-p))
   "Invoke, and let warp refuse.  The consumer only reports.
 The invoker is the CONSUMER's, so an owner and a guest over one projection get different answers
 here, and rule 6 is unchanged: this is the enforcement point, the menu was courtesy."
   (handler-case
-      (let ((r (invoke (cmd-name command) object (consumer-invoker c) :confirmed confirmed)))
+      (let ((r (if value-p
+                   (invoke (cmd-name command) object (consumer-invoker c)
+                           :confirmed confirmed :value value)
+                   (invoke (cmd-name command) object (consumer-invoker c)
+                           :confirmed confirmed))))
         (setf (consumer-last-result c) r)
         r)
     (command-refused (e)
@@ -124,6 +167,12 @@ knows what its coordinates mean."
                 (if (cmd-confirm cmd)
                     (confirm-menu c (getf (consumer-menu c) :target) cmd)
                     (progn (run-command c cmd (mi-target it)) (close-menu c)))))
+             ;; A CHOICE CARRIES ITS VALUE, and closes the menu like any other tap.  There is
+             ;; no confirmation step: a picker sets a parameter, and setting one is reversible
+             ;; by setting it again -- which is rule 6's actual test, not a category of command.
+             (:choice
+              (run-command c (mi-command it) (mi-target it) :value (mi-value it))
+              (close-menu c))
              (:confirm
               (run-command c (mi-command it) (mi-target it) :confirmed t)
               (close-menu c))))))

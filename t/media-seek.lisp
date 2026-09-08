@@ -166,9 +166,11 @@
 (ok "an audio-only M4A plays too" (eq (warp-media:player-state *p*) :playing))
 (first-frames 12)
 (ok "and it is 440 Hz as well" (< 400 (zero-cross-hz (first-frames 12)) 480))
-(ok "cassette names the codecs it cannot decode, and no longer names H.264 among them"
-    (equal (cassette:player-unsupported (cassette:open-media (merge-pathnames "av.mp4" *root*)))
-           (list "A_AAC")))
+;; This assertion has now been emptied twice, which is the point of keeping it: it names what the
+;; stack CANNOT do, so every time something starts working the list gets shorter.  It held
+;; "V_MPEG4/ISO/AVC" until H.264 decoded, then "A_AAC" until AAC did, and av.mp4 now plays whole.
+(ok "cassette names the codecs it cannot decode, and there are none left in this file"
+    (null (cassette:player-unsupported (cassette:open-media (merge-pathnames "av.mp4" *root*)))))
 
 (format t "~&== the seek bar: 32 cells, a tap on one is a command~%")
 (warp-media:stop *p*)

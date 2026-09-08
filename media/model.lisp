@@ -16,12 +16,16 @@
 
 ;;; ---- where the media is --------------------------------------------------------------------------
 
-(defparameter *extensions* '("webm" "mp4" "m4a" "mp3" "opus" "ogg" "oga" "aac")
-  "What this player can open.  WebM (VP8 + Opus) plays whole through cassette; MP4 and M4A play
-their AUDIO through reed, because MP4 video is H.264 and reel does not decode it — the file is
-listed rather than hidden, because a person with a folder of them would rather hear one than be
-told the folder is empty.  Named after the containers so a folder of photographs is not a
-playlist of errors.")
+(defparameter *extensions*
+  '("webm" "mkv" "mp4" "m4a" "mpg" "mpeg" "vob" "ts" "m2ts" "mp3" "opus" "ogg" "oga" "aac")
+  "What this player can open.  Named after the CONTAINERS rather than the codecs, so that a folder
+of photographs is not a playlist of errors — and because which codec is inside is not knowable from
+the name anyway.
+
+WebM and Matroska are the same demuxer; `.mpg', `.vob', `.ts' and `.m2ts' are MPEG program and
+transport streams, which carry MPEG-1, MPEG-2 or H.264 video.  A file whose video this cannot decode
+is still listed rather than hidden: a person with a folder of them would rather hear one than be
+told the folder is empty.")
 
 (defun default-media-root ()
   "$GLASS_MEDIA, else the first of ~/Videos, ~/Music, HOME that exists."

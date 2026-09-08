@@ -237,7 +237,10 @@
 
 (defun %media-kind (path)
   (let ((type (string-downcase (or (pathname-type path) ""))))
-    (cond ((string= type "webm") :webm)
+    (cond ((member type '("webm" "mkv") :test #'string=) :webm)
+          ;; program and transport streams: cassette demuxes them and reel decodes what is inside,
+          ;; which is MPEG-1, MPEG-2 or H.264 depending on the decade the file is from
+          ((member type '("mpg" "mpeg" "vob" "ts" "m2ts") :test #'string=) :mpegsys)
           ((string= type "mp3") :mp3)
           ((member type '("opus" "ogg" "oga") :test #'string=) :opus)
           ;; MP4 and M4A go through CASSETTE's demuxer and then reed's AAC decoder, rather than
@@ -360,7 +363,7 @@
 (defun %run-worker (p gen kind path from)
   (handler-case
       (ecase kind
-        ((:webm :mp4) (%run-container p gen path from))
+        ((:webm :mp4 :mpegsys) (%run-container p gen path from))
         ((:mp3 :opus :aac) (%run-audio-file p gen kind path from)))
     (serious-condition (e) (%fail p gen e)))
   (with-player (p) (when (%live-p p gen) (setf (%worker-done p) t))))

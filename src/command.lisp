@@ -25,16 +25,42 @@
   (destructive nil)       ; may not be a default; hold-menu only
   (confirm nil)           ; irreversible: refuses without :confirmed t
   (cost :local)           ; :local | :gateway | :network — scheduling data for any consumer
-  (label nil))
+  (label nil)
+  ;; ---- the manipulative half ---------------------------------------------------------
+  ;; VALUES makes a command a PICKER rather than a verb: (object) -> ((value . label) ...),
+  ;; the choices this command offers FOR THIS TARGET.  NIL means the command takes no value
+  ;; and is invoked for its effect, which is every command warp had before this.
+  ;;
+  ;; WHY ENUMERATED AND NOT FREE-FORM.  A phone sends tap, hold and two-finger (rule 5), so
+  ;; the only thing a surface can do is offer choices and let one be tapped.  That is not a
+  ;; limitation to work around -- it is why a menu of values needs no new gesture, no text
+  ;; entry, and no coordinate.  A parameter whose range is genuinely continuous has to be
+  ;; quantised into choices by the app, which is the app's business and not the protocol's.
+  (values-fn nil)
+  ;; CURRENT lets a control show what is set now: (object) -> the value, compared with EQUAL
+  ;; against the car of a VALUES pair.  Optional; without it a picker still works and simply
+  ;; cannot mark which option is live.
+  (current-fn nil))
 
 (defvar *commands* (make-hash-table :test 'eq))          ; name -> command
 (defvar *defaults* (make-hash-table :test 'equal))       ; (type . view) -> command name
 
-(defmacro define-command ((name &key arg-type (cost :local) destructive confirm label)
-                          (object invoker) &body body)
+(defmacro define-command ((name &key arg-type (cost :local) destructive confirm label
+                                     values current)
+                          (object invoker &optional value) &body body)
   "Declare a command against a presentation type.  BODY is the handler; AUTHORIZE is attached
 separately with DEFINE-COMMAND-AUTHORIZATION so the predicate can live next to the policy it
-enforces rather than next to the UI."
+enforces rather than next to the UI.
+
+A THIRD VARIABLE MAKES IT A PICKER.  With VALUE in the lambda list and :VALUES supplying the
+choices, the command is a parameter rather than a verb: a hold offers one menu item per choice
+and tapping one invokes the command WITH that value.  :CURRENT, if given, says which choice is
+live so the menu can mark it.
+
+That is the whole of warp's manipulative core, and it is deliberately not a new interaction:
+a value change is a tap on a menu item, which rule 5 already had.  What was missing was a
+command that could carry the tapped value, so every settable parameter needed one command per
+possible value -- MEASURE-SUM, MEASURE-COUNT -- which does not survive a parameter with ten."
   `(let ((existing (gethash ',name *commands*)))
      (setf (gethash ',name *commands*)
            (make-command :name ',name :arg-type ',arg-type :cost ,cost
@@ -43,8 +69,12 @@ enforces rather than next to the UI."
                          ;; keep any authorization already declared, so load order does not silently
                          ;; drop a policy and widen access
                          :authorize (and existing (cmd-authorize existing))
-                         :handler (lambda (,object ,invoker)
-                                    (declare (ignorable ,object ,invoker))
+                         :values-fn ,values
+                         :current-fn ,current
+                         :handler (lambda (,object ,invoker
+                                           ,@(when value (list value)))
+                                    (declare (ignorable ,object ,invoker
+                                                        ,@(when value (list value))))
                                     ,@body)))
      ',name))
 
@@ -107,15 +137,31 @@ so a surface that offers too much cannot grant anything."
              (format s "warp: refused ~s — ~a"
                      (cmd-name (refused-command c)) (refused-reason c)))))
 
-(defun invoke (name object invoker &key confirmed)
+(defun command-values (c object)
+  "The choices C offers for OBJECT, as ((value . label) ...), or NIL if it is not a picker."
+  (let ((f (cmd-values-fn c))) (and f (funcall f object))))
+
+(defun command-current (c object)
+  "The value currently set on OBJECT, or NIL.  Compared EQUAL against a choice's car."
+  (let ((f (cmd-current-fn c))) (and f (funcall f object))))
+
+(defun invoke (name object invoker &key confirmed (value nil value-p))
   "Run a command.  Authorization is checked HERE, regardless of which surface asked and regardless
-of what any menu displayed.  Returns the handler's value, or signals COMMAND-REFUSED."
+of what any menu displayed.  Returns the handler's value, or signals COMMAND-REFUSED.
+
+VALUE is passed to a picker's handler.  A VALUE OFFERED TO A COMMAND THAT TAKES NONE IS AN
+ERROR rather than ignored: a surface sending one has misunderstood the command, and silently
+dropping it would run the verb instead -- which for a destructive command is the wrong failure."
   (let ((c (find-command name)))
     (when (and (cmd-authorize c) (not (funcall (cmd-authorize c) invoker)))
       (error 'command-refused :command c :reason "not authorized"))
     (when (and (cmd-confirm c) (not confirmed))
       (error 'command-refused :command c :reason "irreversible; needs confirmation"))
-    (funcall (cmd-handler c) object invoker)))
+    (when (and value-p (not (cmd-values-fn c)))
+      (error 'command-refused :command c :reason "takes no value"))
+    (if (cmd-values-fn c)
+        (funcall (cmd-handler c) object invoker value)
+        (funcall (cmd-handler c) object invoker))))
 
 ;;; ---- gestures -> commands --------------------------------------------------
 ;;; The closed enum from DESIGN.md rule 5.  Recognition happens on the client; the server only maps.
