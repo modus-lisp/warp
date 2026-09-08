@@ -43,10 +43,11 @@
 
 (defstruct (dom-server (:conc-name ds-))
   socket port projection thread (consumers '()) (stop nil) (hz 8)
-  view rows budget invoker (apps '()))
+  view rows budget invoker (apps '()) (attach nil))
 
 (defun serve-dom (projection &key (port 8787) view (rows 14) (budget 100000)
-                                  (invoker :allowlist) (hz 8) (apps '()))
+                                  (invoker :allowlist) (hz 8) (apps '())
+                                  (attach nil attach-p))
   "Serve PROJECTION to browsers on PORT.  Every connection is its OWN consumer — its own stream, its
 own budget, its own scroll, its own menu — which is rule 8 arriving for free: two tabs are two
 consumers over one query, exactly as two glass windows are.
@@ -56,10 +57,16 @@ APPS are FURTHER projections on the same connection, as (id . plist) with :PROJE
 without one.  PROJECTION is the default app, the one a message with no `a` routes to and the one
 whose frames go back unlabelled.
 
+ATTACH is how the default app's consumer is made, and it exists because the per-app specs already
+had one and the default did not.  An encoding that claims containers -- warp-files' Miller columns,
+warp-quire's document parts -- supplies its own consumer class through it; without it the default
+app always got a plain DOM-CONSUMER and every row landed in `rows', which is correct and flat.
+
 Returns a DOM-SERVER; STOP-DOM shuts it down."
   (let* ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp))
          (srv (make-dom-server :socket sock :port port :projection projection :hz hz
-                               :view view :rows rows :budget budget :invoker invoker :apps apps)))
+                               :view view :rows rows :budget budget :invoker invoker :apps apps
+                               :attach (and attach-p attach))))
     (setf (sb-bsd-sockets:sockopt-reuse-address sock) t)
     (sb-bsd-sockets:socket-bind sock #(127 0 0 1) port)
     (sb-bsd-sockets:socket-listen sock 8)
@@ -127,7 +134,7 @@ the whole of what a host supplies to MAKE-MUX, on either side of the line."
                     :view (if spec (getf spec :view) (ds-view srv))
                     :rows (if spec (getf spec :rows (ds-rows srv)) (ds-rows srv))
                     :budget (if spec (getf spec :budget (ds-budget srv)) (ds-budget srv))
-                    :attach (or (and spec (getf spec :attach)) #'attach-dom)
+                    :attach (or (and spec (getf spec :attach)) (ds-attach srv) #'attach-dom)
                     :app app
                     :invoker invoker :hz (ds-hz srv)
                     :name (format nil "ws:~a~@[/~a~]" (ds-port srv) app)

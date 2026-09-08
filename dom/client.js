@@ -205,33 +205,147 @@ function makeWarpClient(opts) {
     if (w) { waiting.delete(rec.key); for (const r of w) place(r); }
   }
 
+  // ---- the widget table: what a row's cells MEAN, per declared type ----------------------
+  //
+  // MIRRORS src/widget.lisp, and mirrors it deliberately rather than receiving it.  Sending the
+  // declarations down the wire was the alternative and it buys nothing here: a client paints the
+  // kinds it has CSS for, so a kind it has never heard of is one it could not draw even if it
+  // were told the layout.  What it does instead is fall back to a plain row, which is what every
+  // client did before any of this and is never worse than guessing.
+  //
+  // WHAT THIS REPLACES is three branches that inferred a row's kind from its DATA:
+  //
+  //     if (d.type === "menu-item")     [label, cost, destructive?]
+  //     else if (cells[2] === "opaque") [caption, dims, "opaque"]
+  //     else                            [value, label, trend]
+  //
+  // The third slot meant trend, or destructive, or the literal tag "opaque", decided by testing
+  // its own contents.  That held while every client was a flat list of one kind of thing and
+  // stopped holding the moment one was not: a pivot row is a label, one number per column and a
+  // total, so there is no third slot to sniff and no width to widen to.
+  //
+  // `repeat' is the group that varies with the data — one cell per column of a slice — and there
+  // is at most one, so a layout resolves from both ends: fixed names before it, fixed names after
+  // it, and whatever is left in the middle.
+  const WIDGETS = {
+    "menu-item":       {fixed: ["label", "cost", "tone"]},
+    "row":             {fixed: ["value", "label", "trend"]},
+    "opaque":          {fixed: ["caption", "dimensions", "kind"]},
+    "heading":         {fixed: ["text", "level"]},
+    "prose":           {fixed: ["text"]},
+    "table-head":      {before: ["corner"], repeat: "column", after: ["total"]},
+    "table-row":       {before: ["label"],  repeat: "value",  after: ["total"]},
+    "table-total":     {fixed: ["label", "value"]},
+    "chips":           {before: [], repeat: "chip", after: []},
+    // The document client's own types map onto those kinds.  An app declares this in Lisp with
+    // DEFINE-WIDGET; here it is the same statement in the encoding that has to draw it.
+    "heading-row":     {fixed: ["text", "level"]},
+    "prose-row":       {fixed: ["text"]},
+    "slice-head-row":  {before: ["corner"], repeat: "column", after: ["total"]},
+    "slice-data-row":  {before: ["label"],  repeat: "value",  after: ["total"]},
+    "slice-total-row": {fixed: ["label", "value"]},
+    "crumb-row":       {before: [], repeat: "chip", after: []},
+  };
+
+  // Resolve a declaration against an actual row: n names, one per cell, or null when the type is
+  // undeclared or the row is too narrow to satisfy it.  Same rule as WIDGET-LAYOUT in Lisp, and
+  // the Lisp side has the test that proves both ends agree.
+  function layoutOf(type, n) {
+    const w = WIDGETS[type];
+    if (!w) return null;
+    if (w.fixed) return w.fixed.length === n ? w.fixed.slice() : null;
+    const fixed = w.before.length + w.after.length;
+    if (n < fixed) return null;
+    return w.before.concat(new Array(n - fixed).fill(w.repeat), w.after);
+  }
+
   function paint(li, d) {
     const cells = d.cells || [];
+    const names = layoutOf(d.type, cells.length);
+    const at = (name) => { const i = names ? names.indexOf(name) : -1;
+                           return i < 0 ? null : cells[i]; };
+
     if (d.type === "menu-item") {
-      li.className = cells[2] === "destructive" ? "destructive" : "";
+      li.className = at("tone") === "destructive" ? "destructive" : "";
       li.innerHTML = "";
-      li.append(cell("t", cells[0]));
-      if (cells[1]) li.append(cell("c", cells[1]));
-    } else if (cells[2] === "opaque") {
-      // AN OPAQUE NODE IS A HOLE, AND THE CAPTION IS THE WHOLE OF WHAT WE GET (DESIGN.md rule 9).
-      // The app offers this region as pixels; this client cannot blit and is not going to be given
-      // a way to — the wire is JSON cells, "binary payloads" is an open design question, and
-      // sneaking the bytes through here would answer it by accident.  What arrives is a caption the
-      // app chose and a size, so what we draw is a labelled placeholder saying what is not shown.
-      // It is not a row and must not look like one, which is why it gets its own class and cells.
+      li.append(cell("t", at("label")));
+      if (at("cost")) li.append(cell("c", at("cost")));
+      return;
+    }
+
+    // AN OPAQUE NODE IS A HOLE, AND THE CAPTION IS THE WHOLE OF WHAT WE GET (DESIGN.md rule 9).
+    // The app offers this region as pixels; this client cannot blit and is not going to be given
+    // a way to — the wire is JSON cells, "binary payloads" is an open design question, and
+    // sneaking the bytes through here would answer it by accident.  Detected by TYPE now rather
+    // than by finding the word "opaque" in a data slot; the cell survives so an older app that
+    // has not declared its type still lands here.
+    if (d.type === "opaque" || at("kind") === "opaque") {
       li.className = "opaque";
       li.innerHTML = "";
-      li.append(cell("cap", cells[0]));
-      if (cells[1]) li.append(cell("dim", cells[1]));
-      if (d.as_of) { li.append(cell("stale", "as of " + d.as_of)); }
-    } else {
-      li.className = (d.state && d.state.selected) ? "selected " + trend(cells[2]) : trend(cells[2]);
-      li.innerHTML = "";
-      li.append(cell("v", cells[0]), cell("l", cells[1]));
-      // as_of is on every delta because DESIGN.md makes staleness first-class: under a budget a
-      // delta can arrive several passes late, and the consumer is entitled to see it.
-      if (d.as_of) { li.append(cell("stale", "as of " + d.as_of)); }
+      li.append(cell("cap", at("caption") ?? cells[0]));
+      const dim = at("dimensions") ?? cells[1];
+      if (dim) li.append(cell("dim", dim));
+      if (d.as_of) li.append(cell("stale", "as of " + d.as_of));
+      return;
     }
+
+    if (d.type === "heading" || d.type === "heading-row") {
+      const lvl = String(at("level") || "h2").replace(/^:/, "");
+      li.className = "heading " + lvl;
+      li.innerHTML = "";
+      li.append(cell("h", at("text")));
+      return;
+    }
+
+    if (d.type === "prose" || d.type === "prose-row") {
+      li.className = "prose";
+      li.innerHTML = "";
+      li.append(cell("p", at("text")));
+      return;
+    }
+
+    // A TABLE IS STILL A ROW OF CELLS, which is what makes it fit an encoding built for lists.
+    // The head and the body differ only in class, so a stylesheet aligns the columns and the
+    // client does not have to know the table exists as an object.
+    if (d.type === "table-head" || d.type === "slice-head-row" ||
+        d.type === "table-row"  || d.type === "slice-data-row") {
+      const head = d.type === "table-head" || d.type === "slice-head-row";
+      li.className = (head ? "trow thead" : "trow") +
+                     ((d.state && d.state.selected) ? " selected" : "");
+      li.innerHTML = "";
+      cells.forEach((c, i) => {
+        const name = names ? names[i] : null;
+        li.append(cell("td " + (name || ""), c));
+      });
+      return;
+    }
+
+    if (d.type === "table-total" || d.type === "slice-total-row") {
+      li.className = "ttotal";
+      li.innerHTML = "";
+      li.append(cell("l", at("label")), cell("v", at("value")));
+      return;
+    }
+
+    if (d.type === "chips" || d.type === "crumb-row") {
+      // TAPPABLE AS A ROW, NOT PER CHIP, and that is a known gap rather than an oversight: a
+      // gesture carries a key and no coordinates (§10.5), so the client has nothing to send that
+      // would say WHICH chip.  Drawn as chips because that is what they are; whether a chip
+      // should be its own presentation is an open question in src/widget.lisp.
+      li.className = "chips";
+      li.innerHTML = "";
+      cells.forEach((c) => li.append(cell("chip", c)));
+      return;
+    }
+
+    // THE FALLBACK IS THE OLD DEFAULT and stays exactly as it was: value, label, trend.  An app
+    // that has declared nothing gets what every app got before widgets existed.
+    li.className = (d.state && d.state.selected) ? "selected " + trend(cells[2]) : trend(cells[2]);
+    li.innerHTML = "";
+    li.append(cell("v", cells[0]), cell("l", cells[1]));
+    // as_of is on every delta because DESIGN.md makes staleness first-class: under a budget a
+    // delta can arrive several passes late, and the consumer is entitled to see it.
+    if (d.as_of) { li.append(cell("stale", "as of " + d.as_of)); }
   }
   function trend(t) { return t === "bad" ? "bad" : t === "warn" ? "warn" : ""; }
   function cell(cls, text) {
