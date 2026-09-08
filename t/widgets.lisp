@@ -18,7 +18,8 @@
     (asdf:load-system :warp-monitor)
     (asdf:load-system :warp-files/dom)
     (asdf:load-system :warp-media)
-    (asdf:load-system :warp-quire/dom)))
+    (asdf:load-system :warp-quire/dom)
+    (asdf:load-system :warp-catalogue/dom)))
 
 (defpackage #:warp-widget-test (:use #:cl #:warp)) (in-package #:warp-widget-test)
 
@@ -92,6 +93,47 @@
     (equal (widget-cells 'warp-files::fs-file) (widget-cells 'entry)))
 (ok "which is NOT core's ROW — same arity, opposite emphasis"
     (not (equal (widget-cells 'entry) (widget-cells 'row))))
+
+;;; ---- 6. the browser's mirrored table names every declared type ----------------
+;;;
+;;; WHY THIS IS A TEST AND NOT A HABIT.  client.js carries a copy of the registry, because the
+;;; browser has to know a layout to paint one.  Two copies drift, and this pair drifts SILENTLY:
+;;; a type missing from the JS table has no layout, so every named-cell lookup returns null, the
+;;; painter for its kind never fires, and the row falls through to the generic three-cell shape.
+;;; It renders.  It just renders as something else.
+;;;
+;;; FS-PREVIEW and MEDIA-PICTURE were exactly that for as long as the widget layer existed: both
+;;; declared here, neither in the table, so rule 9's opaque node -- the one node whose whole point
+;;; is to say "there are pixels here this surface cannot show" -- drew as an ordinary row.
+(format t "~&~%-- the browser's table mirrors the registry --~%")
+(let* ((path (merge-pathnames "dom/client.js" (asdf:system-source-directory :warp)))
+       (js (with-open-file (s path)
+             (let ((b (make-string (file-length s)))) (subseq b 0 (read-sequence b s)))))
+       (missing '()) (wrong '()))
+  (flet ((js-cells (nm)
+           ;; The names quoted on that key's own line, in order.  The table puts one type per
+           ;; line, which is what makes this readable rather than a JS parser.
+           (let ((at (search (format nil "\"~a\":" nm) js)))
+             (when at
+               (let* ((eol (or (position #\Newline js :start at) (length js)))
+                      (line (subseq js at eol)) (out '()) (i 0))
+                 (loop (let ((a (position #\" line :start i)))
+                         (unless a (return))
+                         (let ((b (position #\" line :start (1+ a))))
+                           (unless b (return))
+                           (push (subseq line (1+ a) b) out)
+                           (setf i (1+ b)))))
+                 (rest (nreverse out)))))))            ; drop the key itself
+    (loop for ty being the hash-keys of warp::*widgets*
+          for nm = (string-downcase (symbol-name ty))
+          for want = (mapcar (lambda (c) (string-downcase (symbol-name (if (consp c) (second c) c))))
+                             (widget-cells ty))
+          for got = (js-cells nm)
+          do (cond ((null got) (push nm missing))
+                   ((not (equal want got)) (push (list nm want got) wrong)))))
+  (format t "     types declared in Lisp: ~a~%" (hash-table-count warp::*widgets*))
+  (ok "every declared type is in the browser's table" (null missing) missing)
+  (ok "and with the same cells, in the same order" (null wrong) wrong))
 
 (format t "~&~%== ~[all checks passed~:;~:*~d FAILED~] ==~%~%" *fails*)
 (sb-ext:exit :code (if (zerop *fails*) 0 1))

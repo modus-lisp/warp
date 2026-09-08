@@ -26,9 +26,20 @@ END = "// ==== END warp/dom/client.js ===="
 
 here = pathlib.Path(__file__).resolve().parent
 client = (here.parent / "dom" / "client.js").read_text()
-gw = here.parent.parent / "webrtc-data" / "demo" / "glass-webrtc"
-hosts = ([pathlib.Path(a) for a in sys.argv[1:]]
-         or [gw / "payload.js", gw / "index-nostr.html"])
+# WHERE THE HOST LIVES, AND WHY THIS IS A LIST.  The phone client moved out of
+# webrtc-data/demo/ into its own glass-webrtc repo, and this path did not follow it -- so the
+# "not checked out beside warp" skip below stopped meaning "you do not have the host" and
+# started meaning "the host is somewhere else", silently, for as long as the move was old.
+# A skip that cannot tell those apart is not a guard, so the candidates are searched in order
+# and the FIRST ONE THAT EXISTS wins.  Order is newest home first.
+def _hosts():
+    up = here.parent.parent
+    for gw in (up / "glass-webrtc", up / "webrtc-data" / "demo" / "glass-webrtc"):
+        found = [gw / n for n in ("payload.js", "index-nostr.html") if (gw / n).exists()]
+        if found:
+            return found
+    return []
+hosts = [pathlib.Path(a) for a in sys.argv[1:]] or _hosts()
 
 checked = 0
 drifted = 0

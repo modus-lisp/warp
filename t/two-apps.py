@@ -39,11 +39,27 @@ ROOT = pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/warp-two-fixture
 OUT = os.environ.get("WARP_BROWSER_OUT", "/tmp/warp-browser")
 os.makedirs(OUT, exist_ok=True)
 HERE = pathlib.Path(__file__).resolve().parent
-JS = pathlib.Path(os.environ.get(
-    "WARP_PHONE_PAYLOAD",
-    HERE.parent.parent / "webrtc-data" / "demo" / "glass-webrtc" / "payload.js"))
+# Searched in order, newest home first: payload.js moved out of webrtc-data/demo/ into its own
+# glass-webrtc repo and this path did not follow, so this harness SKIPPED silently rather than
+# failing -- which is the worst of both, since the block it lifts is edited in payload.js.
+def _payload():
+    env = os.environ.get("WARP_PHONE_PAYLOAD")
+    if env:
+        return pathlib.Path(env)
+    up = HERE.parent.parent
+    for c in (up / "glass-webrtc" / "payload.js",
+              up / "webrtc-data" / "demo" / "glass-webrtc" / "payload.js"):
+        if c.exists():
+            return c
+    return up / "glass-webrtc" / "payload.js"
+JS = _payload()
 
 fails = []
+def named(n, rows):
+    """Is a row NAMED n?  An entry row's text is its name followed by its detail ("9 bytes"),
+    so this is a prefix test -- `n in rows` would only ever have matched a detail-less row."""
+    return any(t.startswith(n) for t in rows)
+
 def ok(name, cond, detail=""):
     print(f"  {'ok  ' if cond else 'FAIL'} {name}{('   ' + str(detail)) if detail else ''}")
     if not cond:
@@ -116,6 +132,17 @@ window.sent = [];
 window.rx = [];      // every frame as it arrived, so a test can price one
 // shell.js's own line: the payload may not create a data channel, so both apps get this one.
 const warpCh = pc.createDataChannel('warp', { ordered: true, negotiated: true, id: 102 });
+
+// THE PAYLOAD CHANNEL, STUBBED.  The file-browser block grew an upload UI (stream 104) inside its
+// own markers, so lifting the block now lifts code that closes over `payloadCh`.  The harness has
+// no gateway and must not pretend to: this stub is OPEN and RECORDS, so the panel builds and its
+// buttons exist, and any test that wants to assert about an upload reads window.upSent rather than
+// a file appearing on a disk.  A test that needs a real stream 104 needs the gateway, which this
+// harness says up front it does not have.
+window.upSent = [];
+const payloadCh = { readyState: 'open', bufferedAmount: 0,
+                    send: d => window.upSent.push(d),
+                    addEventListener: () => {} };
 """
 
 page_html = f"""<!doctype html>
@@ -186,18 +213,21 @@ window.T = {{
   // mark every rendered row node, so a later pass can tell "the same element moved" from
   // "a new element was built with the same content"
   mark: () => {{ let i = 0; for (const li of document.querySelectorAll('#filesRows li')) li.dataset.mark = String(i++); }},
-  marks: () => [...document.querySelectorAll('#filesRows li')].map(li => [li.dataset.mark, (li.querySelector('.v')||li).textContent]),
+  // The NAME cell, not the whole row: a header's detail is its item COUNT, which legitimately
+  // changes when a file arrives.  Reading the whole row would call that a content change on an
+  // element that only moved, which is the opposite of what the :moved assertions are asking.
+  marks: () => [...document.querySelectorAll('#filesRows li')].map(li => [li.dataset.mark, (li.querySelector('.n, .v')||li).textContent]),
   // a real press and release, through the client's own gesture recognizer — down, up inside the
   // hold window, which is what rule 5 calls a tap.  Not client.tap(key): that is the harness door.
   tapText: t => {{ for (const li of document.querySelectorAll('#filesRows li')) {{
-                     const v = li.querySelector('.v');
+                     const v = li.querySelector('.n, .v');
                      if (v && v.textContent === t) {{
                        li.dispatchEvent(new PointerEvent('pointerdown', {{bubbles: true}}));
                        li.dispatchEvent(new PointerEvent('pointerup', {{bubbles: true}}));
                        return li.dataset.key; }} }}
                    return null; }},
   holdText: t => {{ for (const li of document.querySelectorAll('#filesRows li')) {{
-                     const v = li.querySelector('.v'); if (v && v.textContent === t) {{ files.hold(li.dataset.key); return li.dataset.key; }} }}
+                     const v = li.querySelector('.n, .v'); if (v && v.textContent === t) {{ files.hold(li.dataset.key); return li.dataset.key; }} }}
                     return null; }},
   warp: () => warp, files: () => files
 }};
@@ -324,7 +354,10 @@ with sync_playwright() as pw:
        len(cols) == 1 and cols[0][0] == "col:" + str(ROOT) + "/", cols)
     text = page.evaluate("T.colText()")
     ok("with the column's own rows inside it — the header first, then the entries",
-       text[0][0] == ROOT.name and "alpha.txt" in text[0] and "fix" in text[0], text[0])
+       # The header is an ENTRY too, so its text is the name FOLLOWED BY its detail ("3 items"):
+       # startswith, not equality, or this asserts the header carries no count.
+       text[0][0].startswith(ROOT.name) and any(t.startswith("alpha.txt") for t in text[0])
+       and "fix" in text[0], text[0])
     ok("and the device manager's rows were not disturbed by any of it",
        page.evaluate("T.warpRows()") == dm_rows)
 
@@ -337,9 +370,9 @@ with sync_playwright() as pw:
        [c[0] for c in cols])
     text = page.evaluate("T.colText()")
     ok("each holds ITS OWN rows and no others",
-       "alpha.txt" in text[0] and "alpha.txt" not in text[1]
-       and "gamma.txt" in text[1] and "gamma.txt" not in text[0], text)
-    ok("the second column's header is its own directory", text[1][0] == "fix", text[1][0])
+       named("alpha.txt", text[0]) and not named("alpha.txt", text[1])
+       and named("gamma.txt", text[1]) and not named("gamma.txt", text[0]), text)
+    ok("the second column's header is its own directory", text[1][0].startswith("fix"), text[1][0])
     ok("nothing is parked waiting for an anchor that never came",
        page.evaluate("T.files().parked()") == [], page.evaluate("T.files().parked()"))
 
@@ -355,7 +388,7 @@ with sync_playwright() as pw:
     page.evaluate("T.mark()")
     before = page.evaluate("T.marks()")
     (ROOT / "fix" / "aaa-new.txt").write_text("z" * 10)
-    page.wait_for_function("T.colText()[1].includes('aaa-new.txt')", timeout=15000)
+    page.wait_for_function("T.colText()[1].some(t => t.startsWith('aaa-new.txt'))", timeout=15000)
     after = page.evaluate("T.marks()")
     moved = [m for m in after if m[0] is not None]
     ok("the inserted row is the only node without a mark — every other one is the SAME element",
@@ -368,7 +401,7 @@ with sync_playwright() as pw:
 
     print("== the opaque node: pixels this surface cannot have, and the caption it can ==")
     png(ROOT / "fix" / "swatch.png", 320, 200)
-    page.wait_for_function("T.colText()[1].includes('swatch.png')", timeout=20000)
+    page.wait_for_function("T.colText()[1].some(t => t.startsWith('swatch.png'))", timeout=20000)
     page.evaluate("T.tapText('swatch.png')")
     page.wait_for_function("T.opaque().length === 1", timeout=20000)
     op = page.evaluate("T.opaque()")[0]

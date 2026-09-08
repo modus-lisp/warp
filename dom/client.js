@@ -230,7 +230,7 @@ function makeWarpClient(opts) {
   const WIDGETS = {
     "menu-item":       {fixed: ["label", "cost", "tone"]},
     "row":             {fixed: ["value", "label", "trend"]},
-    "opaque":          {fixed: ["caption", "dimensions", "kind"]},
+    "opaque":          {before: ["caption", "dimensions"], repeat: "detail", after: ["kind"]},
     "heading":         {fixed: ["text", "level"]},
     "prose":           {fixed: ["text"]},
     "table-head":      {before: ["corner"], repeat: "column", after: ["total"]},
@@ -263,6 +263,19 @@ function makeWarpClient(opts) {
     "media-track":     {fixed: ["label", "detail", "tag"]},
     "media-control":   {fixed: ["glyph", "kind"]},
     "media-seek":      {fixed: ["state"]},
+    // ...and both present rule 9's OPAQUE node under their own name too.  Leaving these two out
+    // is not a missing style, it is a missing TYPE: with no layout, `at("kind")` is null, the
+    // opaque branch below never fires, and a preview paints as an ordinary row -- silently, which
+    // is the whole reason widget-table drift is now a test rather than a habit.
+    "fs-preview":      {fixed: ["caption", "dimensions", "kind"]},
+    // The device manager's two types ARE core's ROW, which is why they painted correctly while
+    // undeclared -- the generic branch is the one they wanted.  Named anyway: "it happens to fall
+    // through to the right place" is not the same statement as "this is a row", and only the
+    // second one survives someone editing the fallback.
+    "enrolment":       {fixed: ["value", "label", "trend"]},
+    "stat":            {fixed: ["value", "label", "trend"]},
+    "media-transport": {fixed: ["title", "clock", "state", "error"]},
+    "media-picture":   {before: ["caption", "dimensions"], repeat: "detail", after: ["kind"]},
     "cat-head":        {fixed: ["text", "level"]},
     "cat-note":        {fixed: ["text"]},
     "cat-menu":        {fixed: ["label", "cost", "tone"]},
