@@ -13,7 +13,7 @@
    ;; symbol identity, so an unexported name read in another package is a different widget --
    ;; which is the same cross-package trap that made cell names keywords.
    #:menu-item #:row #:entry #:opaque #:heading #:prose #:button #:meter
-   #:table-head #:table-row #:table-total #:chip
+   #:table-head #:table-row #:table-total #:chip #:toggle #:choice
    #:presentation #:make-presentation #:copy-presentation
    #:p-key #:p-type #:p-object #:p-extent #:p-as-of
    #:p-fingerprint #:p-state #:p-children #:p-cost

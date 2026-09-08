@@ -203,6 +203,13 @@ command; rule 5 needed no new verb for it, which is why this is a widget and not
 (define-widget meter (state)
   "ONE SEGMENT of a progress bar: :empty, :head or :filled.
 
+AND A SLIDER IS THIS ONE, TAPPED.  A segment is already a presentation, so giving it a default
+command that sets the value to its own position is the whole of a slider -- discrete, one tap,
+no drag.  That is the decomposition the interaction-language section requires of continuous
+manipulation: the wire carries semantics, not a finger\'s path, so a slider is N choices that
+happen to be drawn as a bar.  A CONTINUOUS slider is not available and should not be faked; the
+quantisation is the app\'s, and twenty segments is a percentage to the nearest five.
+
 A METER IS N PRESENTATIONS, NOT ONE WIDE ROW, and warp-media found the reason: a second of
 playback changes AT MOST ONE CELL.  Send the bar as a single row and every tick re-sends the whole
 thing; send it as segments and the delta is one segment, which over a 1024-byte pass at 4 Hz is
@@ -256,6 +263,45 @@ type's layout, and never has to guess it from the value.")
 
 (define-widget table-total (label value)
   "The grand total under a pivot.")
+
+(define-widget toggle (label state)
+  "A SETTING THAT IS ON OR OFF.  STATE is :on or :off.
+
+THE CHECKBOX, and it needed no protocol at all -- which is the finding, not the widget.  A toggle
+is a row whose declared default command flips a boolean and whose current value is a cell; tap is
+already the default-command gesture (rule 5), so there is no new verb, no new delta kind and no
+new message.  It took a widget because there was nothing to PAINT it as, not because there was
+nothing to express.
+
+WHY STATE IS A CELL HERE AND VIEW STATE ELSEWHERE, since the two look alike and the distinction
+has bitten twice: a toggle\'s on-ness is a fact about the DOMAIN -- every consumer looking at this
+setting sees the same value, and a second seat must be told when it changes.  `selected\' and a
+picker\'s `live\' are facts about the CONSUMER, and two seats may disagree about them forever.
+Rule 7 is the test: would another seat need to know?  Then it is content.")
+
+(define-widget choice (label state)
+  "ONE OPTION of a set shown INLINE -- a segmented control, a pill set, a row of tabs.
+
+THE SAME PICKER, RENDERED WITHOUT THE MENU.  A hold-menu of values is the right shape when the
+options are many or the space is small; when there are three and they matter, a person expects to
+see them.  So this is not a second mechanism: an option is a presentation whose tap invokes the
+same valued command a menu item would, and which one is live travels as view state exactly as it
+does on the menu.
+
+WHICH ONE IS SET IS A CELL, and getting that wrong first is what makes it worth stating.  It was
+declared as view state, by analogy with the hold-menu -- and the analogy is false.  Apply the test
+from TOGGLE: would another seat need to know?  It would.  The selected mode is a fact about the
+SETTING, not about the looker, so two consumers must agree about it and it travels as content.
+STATE is :live or :idle.
+
+(The hold-menu marks its live choice with view state, and that is a looser fit than it looks --
+the value comes from COMMAND-CURRENT, which reads the domain.  It is harmless there because a
+menu is one consumer\'s open menu and dies with it.  Inline options outlive the tap.)
+
+IT IS A CHIP THAT MEANS SOMETHING DIFFERENT.  Nearly the same cells, and they could have shared a
+declaration -- they do not, because an encoding wants to draw them differently: a chip is a step
+you can go BACK to, an option is a value you can SWITCH to, and a stylesheet that could not tell
+them apart would have to guess from the container.")
 
 (define-widget chip (label)
   "ONE chip — a step of a drill path, a filter clause, a breadcrumb.

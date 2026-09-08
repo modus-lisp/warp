@@ -87,17 +87,24 @@ nothing."))
 
 (defmacro define-sample-keys (&rest widgets)
   "A sample's key is its id, whichever widget it is being rendered as.  One declaration per type
-for the same reason as the presenters: the lookup is by TYPE, and a sample wears twelve."
+for the same reason as the presenters: the lookup is by TYPE, and a sample wears twelve.
+
+AND A TYPE HAS EXACTLY ONE KEY FUNCTION, which is the thing this file found the hard way.  The
+live slider presents as METER and so do the static meter samples, so the key function for METER is
+called with both -- and one that assumed SAMPLE died on the other with `no applicable method for
+SAMPLE-ID'.  Hence the ETYPECASE: two classes sharing a presentation type share its identity rule,
+and there is nowhere else to put the distinction."
   `(progn ,@(loop for w in widgets
-                  collect `(define-presentation-key ,w (s) (sample-id s)))))
+                  collect `(define-presentation-key ,w (o)
+                             (etypecase o
+                               (sample (sample-id o))
+                               (live-seg (format nil "live/seg/~a" (ls-index o))))))))
 
 (define-sample-presenters warp:menu-item warp:row warp:entry warp:opaque warp:heading
                           warp:prose warp:button warp:meter warp:table-head warp:table-row
                           warp:table-total warp:chip)
 
-(define-sample-keys warp:menu-item warp:row warp:entry warp:opaque warp:heading
-                    warp:prose warp:button warp:meter warp:table-head warp:table-row
-                    warp:table-total warp:chip)
+
 
 ;;; ---- the samples -------------------------------------------------------------------
 ;;; VARIANTS ARE THE POINT.  A widget shown once shows that it renders; a widget shown in every
@@ -140,6 +147,91 @@ for the same reason as the presenters: the lookup is by TYPE, and a sample wears
       ("revoke terminal" :gateway :destructive))))
   "((widget note (cells ...)) ...) — the whole catalogue, as data.")
 
+;;; ==================================================================================
+;;; THE LIVE SECTION
+;;; ==================================================================================
+;;;
+;;; A STATIC SAMPLE CANNOT SHOW A CONTROL WORKING.  Everything above renders a widget; these
+;;; three are backed by real state with real commands, so tapping them changes something and the
+;;; change comes back as an ordinary delta.  That is the difference between a catalogue that
+;;; shows what a widget LOOKS like and one that shows what it DOES -- and for a control the
+;;; second is the only interesting question.
+;;;
+;;; All three needed no protocol: a toggle is a row whose default command flips a boolean, an
+;;; option is a presentation whose tap invokes a valued command, and a slider is a meter segment
+;;; whose tap sets the value to its own position.
+
+(defclass demo-state ()
+  ((flag  :initform nil :accessor demo-flag)
+   (mode  :initform "list" :accessor demo-mode)
+   (level :initform 7 :accessor demo-level))
+  (:documentation "What the live section manipulates.  One instance, because the catalogue is
+one page; a second consumer looking at it would see the same values, which is correct -- these
+are domain facts, not view state."))
+
+(defvar *demo* (make-instance 'demo-state))
+
+(defclass live-toggle () ((state :initarg :state :reader lt-state)))
+(defclass live-choice () ((state :initarg :state :reader lc-state)
+                          (value :initarg :value :reader lc-value)))
+(defclass live-seg    () ((state :initarg :state :reader ls-state)
+                          (index :initarg :index :reader ls-index)))
+
+(defparameter +levels+ 20)
+(defparameter +modes+ '("list" "grid" "columns"))
+
+(define-sample-keys warp:menu-item warp:row warp:entry warp:opaque warp:heading
+                    warp:prose warp:button warp:meter warp:table-head warp:table-row
+                    warp:table-total warp:chip)
+
+(define-presentation-key warp:toggle (o) (progn o "live/toggle"))
+(define-presentation-key warp:choice (o) (format nil "live/choice/~a" (lc-value o)))
+
+(defmethod present ((o live-toggle) (type (eql 'warp:toggle)) (view (eql 'catalogue-view)))
+  (list "show hidden files" (if (demo-flag (lt-state o)) :on :off)))
+
+(defmethod present ((o live-choice) (type (eql 'warp:choice)) (view (eql 'catalogue-view)))
+  (list (lc-value o)
+        (if (equal (demo-mode (lc-state o)) (lc-value o)) :live :idle)))
+
+;;; The slider's segments are METERs, so they present exactly as the static ones do -- which is
+;;; the point: a slider is not a different widget, it is a meter you may tap.
+(defmethod present ((o live-seg) (type (eql 'warp:meter)) (view (eql 'catalogue-view)))
+  (let ((n (demo-level (ls-state o))))
+    (list (cond ((< (ls-index o) n) :filled)
+                ((= (ls-index o) n) :head)
+                (t :empty)))))
+
+(define-command (flip :arg-type warp:toggle :cost :local :label "flip") (o invoker)
+  (declare (ignore invoker))
+  (setf (demo-flag (lt-state o)) (not (demo-flag (lt-state o))))
+  (list :flag (demo-flag (lt-state o))))
+(define-default-command 'warp:toggle 'catalogue-view 'flip)
+
+(define-command (pick-mode :arg-type warp:choice :cost :local :label "pick") (o invoker)
+  (declare (ignore invoker))
+  (setf (demo-mode (lc-state o)) (lc-value o))
+  (list :mode (lc-value o)))
+(define-default-command 'warp:choice 'catalogue-view 'pick-mode)
+
+(define-command (set-level :arg-type warp:meter :cost :local :label "set") (o invoker)
+  (declare (ignore invoker))
+  ;; A SLIDER, DECOMPOSED: the segment knows its own position, so setting the value to it needs
+  ;; no coordinate on the wire.  Twenty segments is a percentage to the nearest five, and the
+  ;; quantisation is the app's choice rather than the protocol's.
+  (setf (demo-level (ls-state o)) (ls-index o))
+  (list :level (ls-index o)))
+(define-default-command 'warp:meter 'catalogue-view 'set-level)
+
+(defun live-rows ()
+  (append
+   (list (make-instance 'section-head :widget 'live :level 1)
+         (make-instance 'section-note :widget 'live
+                        :text "these three are backed by real state: tap them.  a toggle is a row whose default command flips a boolean, an option is a tap that carries its value, and a slider is a meter segment that sets the value to its own position.  none of the three needed anything new on the wire."))
+   (list (make-instance 'live-toggle :state *demo*))
+   (loop for m in +modes+ collect (make-instance 'live-choice :state *demo* :value m))
+   (loop for i below +levels+ collect (make-instance 'live-seg :state *demo* :index i))))
+
 ;;; ---- the projection ----------------------------------------------------------------
 
 (defun catalogue-rows ()
@@ -162,7 +254,9 @@ a widget changed."
                       (loop for cells in variants
                             for j from 0
                             collect (make-instance 'sample :widget widget :cells cells
-                                                   :id (format nil "~(~a~)/~a" widget j))))))
+                                                   :id (format nil "~(~a~)/~a" widget j))))
+          into out
+        finally (return (append (live-rows) out))))
 
 (defun row-type (o)
   "Which presentation type each row is.  A sample is presented AS ITS WIDGET, which is what makes
@@ -170,6 +264,9 @@ this a catalogue rather than a screenshot of one."
   (etypecase o
     (section-head 'cat-head)
     (section-note 'cat-note)
+    (live-toggle 'warp:toggle)
+    (live-choice 'warp:choice)
+    (live-seg 'warp:meter)
     (sample (sample-widget o))))
 
 (defun row-container (o)
@@ -187,6 +284,9 @@ same section conceptually."
   (etypecase o
     (section-head (format nil "w:~(~a~)" (section-widget o)))
     (section-note (format nil "w:~(~a~)" (note-widget o)))
+    (live-toggle "live:toggle")
+    (live-choice "opts:mode")          ; laid out as a strip, like any option set
+    (live-seg    "seek:level")         ; and the slider as a bar
     (sample (format nil "s:~(~a~)" (sample-widget o)))))
 
 (defun catalogue-projection ()

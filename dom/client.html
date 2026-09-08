@@ -89,6 +89,22 @@
   #rows .container[data-container^="s:button"],
   #rows .container[data-container^="transport"] { display: flex; flex-wrap: wrap;
                                                   padding: 4px 8px; }
+  /* ---- toggle: a setting that is on or off.  The box is a cell, not a pseudo-element,
+     because a text encoding has to be able to print it too. */
+  #rows li.toggle { cursor: pointer; }
+  #rows li.toggle .box { display: inline-block; width: 18px; height: 18px; border-radius: 4px;
+      border: 1px solid #4a5a6a; text-align: center; line-height: 17px; font-size: 12px;
+      color: #0c0e12; }
+  #rows li.toggle.on { border-left-color: #5abe82; }
+  #rows li.toggle.on .box { background: #5abe82; border-color: #5abe82; }
+  /* ---- choice: an option of an inline set.  A pill, and the live one is filled. */
+  #rows li.choice { display: inline-flex; width: auto; border: 0; background: #222c38;
+      border-radius: 14px; margin: 4px 4px; padding: 5px 14px; cursor: pointer; }
+  #rows li.choice .t { font-size: 13px; color: #b6c2cc; }
+  #rows li.choice.live { background: #2b6cb0; }
+  #rows li.choice.live .t { color: #fff; }
+  #rows .container[data-container^="s:choice"],
+  #rows .container[data-container^="opts:"] { display: flex; flex-wrap: wrap; padding: 4px 10px; }
   /* ---- meter: one segment, and NO TEXT.  A bar made of words is a list. */
   #rows li.seg { display: inline-block; width: 26px; height: 10px; padding: 0; margin: 0 1px;
                  border: 0; border-radius: 2px; background: #222c38; }

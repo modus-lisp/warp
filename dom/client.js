@@ -240,6 +240,8 @@ function makeWarpClient(opts) {
     "entry":           {fixed: ["label", "detail", "tag"]},
     "button":          {fixed: ["glyph", "kind"]},
     "meter":           {fixed: ["state"]},
+    "toggle":          {fixed: ["label", "state"]},
+    "choice":          {fixed: ["label", "state"]},
     // The document client's own types map onto those kinds.  An app declares this in Lisp with
     // DEFINE-WIDGET; here it is the same statement in the encoding that has to draw it.
     "heading-row":     {fixed: ["text", "level"]},
@@ -374,6 +376,25 @@ function makeWarpClient(opts) {
       li.className = "ttotal";
       li.innerHTML = "";
       li.append(cell("l", at("label")), cell("v", at("value")));
+      return;
+    }
+
+    if (d.type === "toggle") {
+      // ON-NESS IS A CELL, not view state: it is a fact about the setting, so every seat sees it.
+      const on = String(at("state") ?? "").replace(/^:/, "") === "on";
+      li.className = "toggle" + (on ? " on" : "");
+      li.innerHTML = "";
+      li.append(cell("box", on ? "\u2713" : ""), cell("n", at("label")));
+      return;
+    }
+
+    if (d.type === "choice") {
+      // An option of an inline set.  WHICH ONE IS SET IS A CELL, not view state: the selected
+      // value is a fact about the setting, so every seat sees the same one.
+      li.className = "choice" +
+        (String(at("state") ?? "").replace(/^:/, "") === "live" ? " live" : "");
+      li.innerHTML = "";
+      li.append(cell("t", at("label")));
       return;
     }
 
