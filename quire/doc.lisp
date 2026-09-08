@@ -106,9 +106,23 @@ the slice is already at its finest grain.")))
   ((label :initarg :label :reader total-label)
    (value :initarg :value :reader total-value)))
 
-(defclass crumb-row (doc-row)
-  ((path :initarg :path :reader crumb-path))
-  (:documentation "The drill path, as one row of chips.  Tapping a chip pops back to it."))
+(defclass crumb-chip (doc-row)
+  ((clause :initarg :clause :reader chip-clause)     ; the (key . value) this chip stands for
+   (depth  :initarg :depth  :reader chip-depth))     ; how far into the path it is, 0-based
+  (:documentation "ONE step of the drill path, and a presentation rather than a cell.
+
+RESOLVED, and the design answered it before this app existed: PROTOCOL.md says `Menus are
+presentations -- opening one emits :appeared per item\'.  A menu is a list of tappable things
+and so is a breadcrumb, so they are the same shape.
+
+The rule that separates a chip from a table cell, which is the question this settles: DOES THE
+THING HAVE IDENTITY IN THE DOMAIN?  A filter clause is an object -- (region . North) -- you can
+name it, key it and revoke it.  A pivot cell is an ATTRIBUTE of a row and has no identity apart
+from it.  Things with identity get keys; things without are cells.
+
+That is also why this does not generalise into `make every cell tappable\': a five-column pivot
+of twenty rows would become a hundred presentations instead of twenty, which is exactly the
+cost a delta protocol exists to avoid.  Four chips is four."))
 
 ;;; ---- identity ---------------------------------------------------------------------
 ;;; RULE 1: the key is declared, and it has to be stable across a re-query or every pass is a
@@ -118,7 +132,10 @@ the slice is already at its finest grain.")))
 (define-presentation-key heading-row (r) (format nil "~a/h" (part-id (row-part r))))
 (define-presentation-key prose-row   (r) (format nil "~a/p" (part-id (row-part r))))
 (define-presentation-key slice-head-row (r) (format nil "~a/head" (part-id (row-part r))))
-(define-presentation-key crumb-row   (r) (format nil "~a/crumb" (part-id (row-part r))))
+(define-presentation-key crumb-chip (r)
+  ;; Keyed by DEPTH, not by value: popping to a chip truncates the path there, and two drills
+  ;; onto the same value at different depths are different steps.
+  (format nil "~a/crumb/~a" (part-id (row-part r)) (chip-depth r)))
 (define-presentation-key slice-total-row (r) (format nil "~a/total" (part-id (row-part r))))
 (define-presentation-key slice-data-row (r)
   (format nil "~a/r/~a" (part-id (row-part r)) (data-label r)))
@@ -126,10 +143,16 @@ the slice is already at its finest grain.")))
 ;;; ---- the container a row lives in --------------------------------------------------
 
 (defun row-container (r)
-  "Every row of a part goes in that part's container.  `part:<id>' by the same convention
-warp-files uses for `col:<path>' -- an app container's name is the app's, and must not be
-`rows' or begin with `menu:' (§10.4)."
-  (format nil "part:~a" (part-id (row-part r))))
+  "Where a row goes.  `part:<id>' by the same convention warp-files uses for `col:<path>' -- an
+app container's name is the app's, and must not be `rows' or begin with `menu:' (§10.4).
+
+CHIPS GET THEIR OWN CONTAINER, and that is the whole of what makes them a horizontal strip: a
+container's place is the client's (§10.4 -- \"Nothing on the wire says where a container goes\"),
+so `crumbs:<id>' is a name the stylesheet lays out in a row while `part:<id>' stacks.  The
+server claims no geometry and the client needs no new delta kind."
+  (if (typep r 'crumb-chip)
+      (format nil "crumbs:~a" (part-id (row-part r)))
+      (format nil "part:~a" (part-id (row-part r)))))
 
 ;;; ---- the query ---------------------------------------------------------------------
 
@@ -146,8 +169,9 @@ warp-files uses for `col:<path>' -- an app container's name is the app's, and mu
          (append
           ;; The drill path, when there is one.  Absent at the top level rather than empty:
           ;; a row that exists only to say "nothing here" is a row the budget pays for.
-          (when (slice-filter sl)
-            (list (make-instance 'crumb-row :part p :path (slice-filter sl))))
+          (loop for clause in (slice-filter sl)
+                for depth from 0
+                collect (make-instance 'crumb-chip :part p :clause clause :depth depth))
           ;; THE HEAD ALWAYS ENDS WITH THE TOTAL COLUMN, pivoted or not, and that is a
           ;; correction the widget declaration forced.  It used to append "total" only when
           ;; there were columns, so a plain list's head was ONE cell while a pivot's was N --

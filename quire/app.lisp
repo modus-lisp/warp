@@ -45,21 +45,26 @@
 
 (define-default-command 'slice-data-row 'quire-view 'drill-into)
 
-(define-command (pop-to :arg-type crumb-row :cost :local :label "back to here")
+(define-command (pop-to :arg-type crumb-chip :cost :local :label "back to here")
     (r invoker)
   (declare (ignore invoker))
-  ;; Pops the WHOLE path.  Popping to a specific chip needs the tapped cell's index, and a
-  ;; gesture carries a KEY and no coordinates (§10.5: "There are no coordinates on this wire"),
-  ;; so a per-chip pop needs one presentation per chip rather than one row of cells.  That is a
-  ;; real finding about the widget set and it is left visible here rather than worked around:
-  ;; A ROW OF CHIPS IS NOT TAPPABLE PER CHIP.  Either chips become presentations, or this stays
-  ;; an all-or-nothing pop.
-  (let ((sl (part-slice (row-part r))))
-    (setf (slice-filter sl) '())
-    (setf (slice-rows-by sl) (car (first (cube-dims (doc-cube *document*)))))
-    (list :popped t)))
+  ;; POPS TO THIS CHIP, which is what it was always supposed to do and could not while the whole
+  ;; path was one presentation: a gesture carries a key and no coordinates, so a row of N cells
+  ;; had nothing to send that said WHICH cell.  Each chip is a presentation now and its key names
+  ;; its depth, so the pop is a truncation.
+  ;;
+  ;; TRUNCATE AT the chip's depth, keeping it: tapping "North" means "show me North", not "undo
+  ;; North".  The rows dimension goes back to the one that was current when that step was taken,
+  ;; which is the dimension AFTER the last surviving clause.
+  (let* ((sl (part-slice (row-part r)))
+         (keep (subseq (slice-filter sl) 0 (1+ (chip-depth r)))))
+    (setf (slice-filter sl) keep)
+    (let ((next (find-if (lambda (d) (not (assoc (cdr d) keep :test #'equal)))
+                         (cube-dims (doc-cube *document*)))))
+      (when next (setf (slice-rows-by sl) (car next))))
+    (list :popped (cdr (chip-clause r)))))
 
-(define-default-command 'crumb-row 'quire-view 'pop-to)
+(define-default-command 'crumb-chip 'quire-view 'pop-to)
 
 ;;; ---- pivoting ---------------------------------------------------------------------
 ;;; On the HEAD row, because that is where the axes are, and a hold there is the closest thing

@@ -236,7 +236,7 @@ function makeWarpClient(opts) {
     "table-head":      {before: ["corner"], repeat: "column", after: ["total"]},
     "table-row":       {before: ["label"],  repeat: "value",  after: ["total"]},
     "table-total":     {fixed: ["label", "value"]},
-    "chips":           {before: [], repeat: "chip", after: []},
+    "chip":            {fixed: ["label"]},
     // The document client's own types map onto those kinds.  An app declares this in Lisp with
     // DEFINE-WIDGET; here it is the same statement in the encoding that has to draw it.
     "heading-row":     {fixed: ["text", "level"]},
@@ -244,7 +244,7 @@ function makeWarpClient(opts) {
     "slice-head-row":  {before: ["corner"], repeat: "column", after: ["total"]},
     "slice-data-row":  {before: ["label"],  repeat: "value",  after: ["total"]},
     "slice-total-row": {fixed: ["label", "value"]},
-    "crumb-row":       {before: [], repeat: "chip", after: []},
+    "crumb-chip":      {fixed: ["label"]},
   };
 
   // Resolve a declaration against an actual row: n names, one per cell, or null when the type is
@@ -327,14 +327,14 @@ function makeWarpClient(opts) {
       return;
     }
 
-    if (d.type === "chips" || d.type === "crumb-row") {
-      // TAPPABLE AS A ROW, NOT PER CHIP, and that is a known gap rather than an oversight: a
-      // gesture carries a key and no coordinates (§10.5), so the client has nothing to send that
-      // would say WHICH chip.  Drawn as chips because that is what they are; whether a chip
-      // should be its own presentation is an open question in src/widget.lisp.
-      li.className = "chips";
+    if (d.type === "chip" || d.type === "crumb-chip") {
+      // ONE CHIP, ONE PRESENTATION, so it has a key and is tappable on its own.  It was a row of
+      // N cells and could only be tapped whole; a gesture carries a key and no coordinates, so
+      // there was nothing to send that said which cell.  Same answer core gives for menu items.
+      // The horizontal strip is the CONTAINER's doing (crumbs:*), not this row's.
+      li.className = "chip" + ((d.state && d.state.selected) ? " selected" : "");
       li.innerHTML = "";
-      cells.forEach((c) => li.append(cell("chip", c)));
+      li.append(cell("t", at("label") ?? cells[0]));
       return;
     }
 

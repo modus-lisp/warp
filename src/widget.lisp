@@ -202,11 +202,28 @@ type's layout, and never has to guess it from the value.")
 (define-widget table-total (label value)
   "The grand total under a pivot.")
 
-(define-widget chips ((:repeat chip))
-  "A row of chips — a drill path, a filter set, a breadcrumb.
+(define-widget chip (label)
+  "ONE chip — a step of a drill path, a filter clause, a breadcrumb.
 
-DECLARED WITH A KNOWN GAP: a gesture carries a key and no coordinates (§10.5), so a row of
-chips is tappable as a ROW and not per chip.  warp-quire's drill path can therefore only be
-popped whole.  The fix is not a coordinate; it is deciding whether a chip is a cell or a
-presentation, and that is an open question this declaration is deliberately not pretending to
-have answered.")
+A CHIP IS A PRESENTATION, NOT A CELL, and the question that decides it is not about chips.
+This was first declared as CHIPS, a row of N cells, and it could only be tapped as a whole: a
+gesture carries a key and no coordinates (§10.5), so a row of cells has nothing to send that
+says WHICH cell.  The tempting fix is a cell index on the gesture; it is wrong, because it is a
+coordinate wearing a different word.
+
+THE DESIGN HAD ALREADY ANSWERED IT.  §10.6: `Menus are presentations -- opening one emits
+:appeared per item\'.  A menu is a list of tappable things and so is a breadcrumb.  Same shape,
+same answer, and the reconciler needs no special case for either.
+
+THE RULE THIS SETTLES, which is the part worth keeping: DOES THE THING HAVE IDENTITY IN THE
+DOMAIN?  A filter clause is an object -- (region . North) -- nameable, keyable, revocable.  A
+pivot cell is an ATTRIBUTE of its row and has no identity apart from it.  Things with identity
+become presentations; things without stay cells.
+
+That rule is also what stops this generalising into `make every cell tappable\'.  A five-column
+pivot of twenty rows would be a hundred presentations instead of twenty, which is precisely the
+cost a delta protocol exists to avoid.  Four chips is four.
+
+A ROW OF CHIPS IS A CONTAINER, then, not a widget: `crumbs:<id>\' beside `part:<id>\', laid out
+horizontally by the client because a container\'s place is the client\'s (§10.4).  No new delta
+kind, no geometry on the wire.")

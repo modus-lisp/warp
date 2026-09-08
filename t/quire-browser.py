@@ -81,6 +81,28 @@ with sync_playwright() as pw:
         " !li.className || li.className === '' ).length")
     ok("no row fell through to the undeclared fallback", fellback == 0, fellback)
 
+    # ---- chips: the thing that could not be expressed an hour ago ------------------
+    # Drill by tapping a row, then check the breadcrumb is INDIVIDUALLY tappable -- which is
+    # only true because each chip is its own presentation with its own key.
+    # A ROW IN A LIST PART, not the pivot: a pivoted slice is already at its finest grain and
+    # its rows carry no drill clause, so tapping one is correctly refused.  Found that by
+    # tapping the wrong row first.
+    page.evaluate("(() => {const c = document.querySelector("
+                  "  '#rows .container[data-container=\"part:channel\"]');"
+                  " const li = c.querySelector('li.trow:not(.thead)');"
+                  " warp.tap(li.dataset.key)})()")
+    page.wait_for_function("document.querySelectorAll('#rows li.chip').length > 0", timeout=10000)
+    chips = page.evaluate(
+        "[...document.querySelectorAll('#rows li.chip')].map(li => [li.dataset.key,"
+        " li.textContent])")
+    ok("a chip appeared after drilling", len(chips) >= 1, chips)
+    ok("each chip is its own node with its own key",
+       len(set(k for k, _ in chips)) == len(chips), [k for k, _ in chips])
+    strip = page.evaluate(
+        "(() => {const c = document.querySelector('#rows .container[data-container^=\"crumbs:\"]');"
+        " return c ? getComputedStyle(c).display : null})()")
+    ok("and they sit in a container the client lays out as a row", strip == "flex", strip)
+
     page.screenshot(path=SHOT, full_page=True)
     print(f"     screenshot: {SHOT}")
     browser.close()

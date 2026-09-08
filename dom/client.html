@@ -62,9 +62,16 @@
      the `total' column it belongs under. */
   #rows li.ttotal .v { margin-left: auto; min-width: 0; font-size: 15px; color: #5abe82;
                        font-variant-numeric: tabular-nums; text-align: right; }
-  #rows li.chips { gap: 8px; border-left-color: #fabe3c; background: #14181e; }
-  #rows li.chips .chip { background: #222c38; border-radius: 10px; padding: 2px 10px;
-                         font-size: 12px; color: #dce4ec; }
+  /* A ROW OF CHIPS IS A CONTAINER, not a row: each chip is its own presentation with its own
+     key, so the strip is laid out by the container that holds them.  A container's place is
+     the client's (§10.4) -- the server sends no geometry and did not have to learn a new
+     delta kind for a horizontal list. */
+  #rows .container[data-container^="crumbs:"] { display: flex; flex-wrap: wrap; gap: 8px;
+      padding: 8px 14px; background: #14181e; border-left: 4px solid #fabe3c; }
+  #rows .container[data-container^="crumbs:"] li.chip { background: #222c38; border: 0;
+      border-radius: 12px; padding: 3px 12px; cursor: pointer; }
+  #rows .container[data-container^="crumbs:"] li.chip.selected { background: #2b6cb0; }
+  #rows li.chip .t { font-size: 12px; color: #dce4ec; }
   #menu { list-style: none; margin: 0; padding: 0; position: absolute; width: 240px;
           box-shadow: 0 8px 24px #0008; }
   #menu:empty { display: none; }

@@ -23,7 +23,11 @@
 (defpackage #:warp-quire-test (:use #:cl #:warp #:warp-quire)) (in-package #:warp-quire-test)
 
 (defvar *fails* 0)
-(defun ok (n p) (format t "~&  ~:[FAIL~;ok  ~] ~a~%" p n) (unless p (incf *fails*)))
+(defun ok (n p &optional detail)
+  "DETAIL is printed with the name — a check that fails on a number should say which number,
+or the reader has to reconstruct it from the source."
+  (format t "~&  ~:[FAIL~;ok  ~] ~a~@[   ~a~]~%" p n detail)
+  (unless p (incf *fails*)))
 
 (defun make-seat (proj)
   (warp-quire-dom:attach-dom proj :rows 200 :budget 1000000))
@@ -107,23 +111,58 @@
     (format t "     containers touched: ~{~a~^ ~}~%"
             (sort (loop for k being the hash-keys of by-container collect k) #'string<))
     (ok "something changed" (plusp (length ds)))
-    (ok "only the drilled part's container is touched"
-        (equal '("part:channel")
-               (sort (loop for k being the hash-keys of by-container collect k) #'string<)))
+    ;; TWO containers now, and both belong to the drilled part: its rows changed and a chip
+    ;; appeared beside them.  The old assertion named one container and encoded the model where
+    ;; the whole path was a single row -- the behaviour is right and the assertion was stale.
+    (ok "only the drilled part's containers are touched, and both are its own"
+        (every (lambda (k) (or (string= k "part:channel") (string= k "crumbs:channel")))
+               (loop for k being the hash-keys of by-container collect k)))
+    (ok "no other part moved"
+        (notany (lambda (k) (search "pivot" k))
+                (loop for k being the hash-keys of by-container collect k)))
     (ok "the change includes rows appearing and going, not just values"
         (and (find "appeared" ds :key #'d-kind :test #'equal)
              (find "gone" ds :key #'d-kind :test #'equal)))))
 
-;;; ---- 4. the crumb finding, asserted rather than narrated -----------------------
-(format t "~&~%-- 4. the drill path is one row of chips --~%")
+;;; ---- 4. a chip is a presentation, which is what makes it tappable ---------------
+(format t "~&~%-- 4. one chip, one presentation, one key --~%")
 
 (let* ((rows (document-rows *doc*))
-       (crumb (find-if (lambda (r) (typep r 'crumb-row)) rows)))
-  (ok "a crumb row appeared once there is a path" (not (null crumb)))
-  (ok "and it is the sixth kind, arriving only when it has something to say"
-      (not (null crumb)))
-  (ok "the whole path is ONE presentation, so chips are not individually tappable"
-      (= 1 (count-if (lambda (r) (typep r 'crumb-row)) rows))))
+       (chips (remove-if-not (lambda (r) (typep r 'crumb-chip)) rows)))
+  (ok "a chip appeared once there is a drill path" (plusp (length chips)))
+  (ok "each step of the path is its OWN presentation, not a cell in one row"
+      (= (length chips)
+         (length (slice-filter (part-slice (doc-part *doc* "channel"))))))
+  (ok "and each has a distinct key, which is the whole of what makes it tappable"
+      (let ((ks (mapcar (lambda (c) (presentation-key 'crumb-chip c)) chips)))
+        (= (length ks) (length (remove-duplicates ks :test #'equal)))))
+  (ok "chips live in their own container, so the client can lay them in a row"
+      (every (lambda (c) (let ((n (row-container c)))
+                           (and (>= (length n) 7) (string= "crumbs:" (subseq n 0 7)))))
+             chips)))
+
+;;; ---- 5. the thing that was impossible an hour ago -------------------------------
+(format t "~&~%-- 5. popping to a chip, which a row of cells could not express --~%")
+
+;; Drill twice more so the path has depth to pop back INTO rather than out of.
+(let* ((rows (document-rows *doc*))
+       (deeper (find-if (lambda (r) (and (typep r 'slice-data-row)
+                                         (string= (part-id (row-part r)) "channel")
+                                         (data-drill r)))
+                        rows)))
+  (when deeper (warp:run-command *seat* (warp:find-command 'drill-into) deeper :confirmed t)))
+
+(let* ((sl (part-slice (doc-part *doc* "channel")))
+       (before (length (slice-filter sl)))
+       (chips (remove-if-not (lambda (r) (typep r 'crumb-chip)) (document-rows *doc*)))
+       (first-chip (find 0 chips :key #'chip-depth)))
+  (ok "the path is more than one step deep" (> before 1) before)
+  (ok "found the first chip" (not (null first-chip)))
+  (warp:run-command *seat* (warp:find-command 'pop-to) first-chip :confirmed t)
+  (let ((after (length (slice-filter sl))))
+    (ok "tapping the FIRST chip truncated the path to it" (= after 1) (list before '-> after))
+    (ok "and kept it rather than undoing it — tapping North means show me North"
+        (= 1 (length (slice-filter sl))))))
 
 ;;; ================================================================================
 (format t "~&~%== ~[all checks passed~:;~:*~d FAILED~] ==~%~%" *fails*)

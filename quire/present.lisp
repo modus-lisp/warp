@@ -56,7 +56,7 @@
 (define-widget slice-head-row (corner (:repeat column) total))
 (define-widget slice-data-row (label (:repeat value) total))
 (define-widget slice-total-row (label value))
-(define-widget crumb-row ((:repeat chip)))
+(define-widget crumb-chip (label))
 
 ;;; ---- authored ---------------------------------------------------------------------
 
@@ -104,9 +104,10 @@
 (defmethod present ((r slice-total-row) (type (eql 'slice-total-row)) (view (eql 'quire-view)))
   (list (total-label r) (total-value r)))
 
-;;; CRUMBS      cells: (chip...)                 -- N-ARY
-;;; The drill path, outermost first.  Each cell is one chip; tapping one pops back to it, which
-;;; the command in app.lisp resolves by POSITION in this list -- the one place a cell index is
-;;; load-bearing, and it is written down here because that is the whole of the contract.
-(defmethod present ((r crumb-row) (type (eql 'crumb-row)) (view (eql 'quire-view)))
-  (mapcar (lambda (clause) (format nil "~a" (cdr clause))) (crumb-path r)))
+;;; CHIP        cells: (label)
+;;; ONE CELL, because a chip is now one presentation.  It was a row of N cells and could only be
+;;; tapped as a whole -- a gesture carries a key and no coordinates, so there was nothing to send
+;;; that said WHICH chip.  Making each chip a presentation gives each one a key, which is the
+;;; same answer core already gives for menu items.
+(defmethod present ((r crumb-chip) (type (eql 'crumb-chip)) (view (eql 'quire-view)))
+  (list (format nil "~a" (cdr (chip-clause r)))))

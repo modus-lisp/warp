@@ -24,7 +24,7 @@
    #:slice-head-row #:head-labels
    #:slice-data-row #:data-label #:data-cells #:data-total #:data-drill
    #:slice-total-row #:total-label #:total-value
-   #:crumb-row #:crumb-path
+   #:crumb-chip #:chip-clause #:chip-depth
    ;; the app
    #:quire-view #:quire-projection #:*document*
    #:drill-into #:pop-to #:measure-sum #:measure-count #:pivot-region #:pivot-quarter
