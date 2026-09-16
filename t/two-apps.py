@@ -143,6 +143,19 @@ window.upSent = [];
 const payloadCh = { readyState: 'open', bufferedAmount: 0,
                     send: d => window.upSent.push(d),
                     addEventListener: () => {} };
+
+// THE DESKTOP VIDEO AND ITS CONTROL CHANNEL, STUBBED, for the same reason and on the same terms as
+// payloadCh above.  A full-screen app now turns the desktop stream OFF -- it hides the element and
+// asks the box to stop sending -- so the lifted block closes over `vidEl` and `ctrl`.  A real
+// <video> element (so visibility is a thing that can be read) and a channel that is OPEN and
+// RECORDS (so the asks can be counted in window.ctrlSent) are exactly enough to assert the
+// behaviour without pretending there is a gateway.
+const vidEl = document.createElement('video');
+vidEl.id = 'vid';
+vidEl.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1;background:#000';
+document.body.appendChild(vidEl);
+window.ctrlSent = [];
+const ctrl = { readyState: 'open', send: d => window.ctrlSent.push(d), addEventListener: () => {} };
 """
 
 page_html = f"""<!doctype html>
@@ -167,6 +180,13 @@ window.T = {{
   // THE MENU IS THE ONLY WAY IN NOW, so the helpers go through it exactly as a thumb would: tap ⊞
   // until the list is up — one tap from the desktop, two if a panel is open, because the first one
   // puts the panel away — then tap the entry.
+  vidHidden: () => getComputedStyle(document.getElementById('vid')).visibility === 'hidden',
+  // ASKS SINCE THE MARK, not since the page loaded.  The sections above open and close apps too,
+  // each correctly toggling the desktop once, so a test that read the whole history would be
+  // asserting about everything that had ever happened rather than about what it just did.
+  videoAsks: () => window.ctrlSent.slice(window.__vmark || 0)
+                     .map(d => JSON.parse(d)).filter(m => 'video' in m).map(m => m.video),
+  markVideo: () => {{ window.__vmark = window.ctrlSent.length; return true; }},
   menuOn: () => getComputedStyle(document.getElementById('appsMenu')).display !== 'none',
   tapApps: () => document.querySelector('[aria-label="apps"]').click(),
   openMenu: () => {{ for (let i = 0; i < 3 && !T.menuOn(); i++) T.tapApps(); return T.menuOn(); }},
@@ -296,9 +316,12 @@ with sync_playwright() as pw:
     ok("one tap opens it", page.evaluate("T.openMenu()"))
     entries = page.evaluate("T.entries()")
     ok("with ONE ENTRY PER APP, each naming one known facet — no 'best available' anything",
-       [e[0] for e in entries] == ["desktop", "devices", "files"], entries)
-    ok("and the DESKTOP is one of them, first — it is a destination, not the absence of one",
-       entries[0][0] == "desktop" and entries[0][2] is False, entries[0])
+       [e[0] for e in entries] == ["devices", "files"], entries)
+    # THE DESKTOP IS NOT IN THIS MENU, and that is the point of the menu.  It only opens FROM the
+    # desktop -- the button puts any panel away first -- so an entry for it offers to take you
+    # where you already are.  It belongs in the STRIP, where you are somewhere else.
+    ok("and the desktop is NOT offered here, because this list only opens from it",
+       "desktop" not in [e[0] for e in entries], entries)
     ok("both are offered, because nothing has been asked yet and silence is the only evidence there is",
        all(e[2] is False for e in entries), entries)
     ok("opening the menu is still not a probe: it puts nothing on the wire",
@@ -469,8 +492,10 @@ with sync_playwright() as pw:
     ok("one tap puts the panel away and does NOT open the menu in its place",
        page.evaluate("T.warpVisible()") == "none" and page.evaluate("T.filesVisible()") == "none"
        and not page.evaluate("T.menuOn()"))
-    ok("the button says so — nothing is up",
-       page.evaluate("document.querySelector('[aria-label=\"apps\"]').dataset.state") == "off")
+    # 'idle', NOT 'off'.  OFF draws a strike through the glyph, which says "switched off" -- true
+    # of a muted mic, meaningless for a menu.  The button wore one whenever no app was open.
+    ok("the button says so — nothing is up, and it is not struck through",
+       page.evaluate("document.querySelector('[aria-label=\"apps\"]').dataset.state") == "idle")
     ok("the row is still one button wide", page.evaluate("T.rowBtns()") == ["apps"],
        page.evaluate("T.rowBtns()"))
     ok("every container the file browser made is still inside its own panel, not loose in the page",
@@ -529,6 +554,7 @@ with sync_playwright() as pw:
     # The assertions below are about both halves of that -- the panel taking the screen, and the
     # switcher appearing to carry what the panel's edge used to: a way to somewhere else.
     print("== a panel that would cover the screen IS the screen ==")
+    page.evaluate("T.markVideo()")
     page.evaluate("T.openWarp()")
     page.wait_for_timeout(250)
     ok("the device manager opened full screen on a phone-sized viewport",
@@ -541,9 +567,54 @@ with sync_playwright() as pw:
        page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", True], ["files", False]],
        page.evaluate("T.switchEntries()"))
 
+    # THE DESKTOP BEHIND IT IS OFF, and both halves are asserted because either alone is a bug that
+    # looks fine: a hidden element still costs the box an encode and the link its bitrate, and a
+    # paused sender alone leaves a frozen frame under a panel that anything can peek round.
+    # ---- the keyboard ------------------------------------------------------------------------
+    #
+    # A MOBILE KEYBOARD DOES NOT RESIZE THE PAGE.  It leaves the layout viewport exactly as tall as
+    # it was and SCROLLS it, so 100vh is still the whole screen and bottom:0 is still somewhere
+    # under the keys.  A panel obeying both keeps its lower half where nobody can see it -- in the
+    # chat, the half with the answer in it, which is what this whole mechanism is for.
+    #
+    # The panel therefore sizes itself to the VISIBLE rectangle, published by JS as --vv-h/--vv-top
+    # and consumed only by CSS.  What is asserted here is that contract: move the variables and the
+    # panel and the strip both follow.  The other half -- that visualViewport's resize and scroll
+    # events are what move them -- is four lines of listener and cannot be driven headlessly,
+    # because there is no way to make Chromium raise a keyboard.
+    kb_h, kb_top = 480, 100
+    page.evaluate(f"""() => {{{{
+      const st = document.documentElement.style;
+      st.setProperty('--vv-h', '{kb_h}px'); st.setProperty('--vv-top', '{kb_top}px');
+    }}}}""")
+    page.wait_for_timeout(120)
+    x, y, w, h = page.evaluate("T.rect('warpPanel')")
+    ok("with the keyboard up the panel ends where the KEYBOARD does, not where the page does",
+       y == kb_top + 44 and h == kb_h - 44, (x, y, w, h))
+    sx, sy, sw, sh = page.evaluate("T.rect('appSwitch')")
+    ok("and the strip rides the visible top rather than the scrolled-away one", sy == kb_top,
+       (sx, sy, sw, sh))
+    page.evaluate("""() => {{ const st = document.documentElement.style;
+                              st.removeProperty('--vv-h'); st.removeProperty('--vv-top'); }}""")
+    page.wait_for_timeout(120)
+    x, y, w, h = page.evaluate("T.rect('warpPanel')")
+    ok("and it takes the whole screen back when the keyboard goes away",
+       y == 44 and h == 780 - 44, (x, y, w, h))
+
+    ok("the desktop video is hidden behind a full-screen app", page.evaluate("T.vidHidden()"))
+    # The opening tap goes through the menu, which closes whatever was up first -- so the asks
+    # since the mark are a resume and then a pause.  What matters is where it ENDED.
+    ok("and the box was asked to stop sending it", page.evaluate("T.videoAsks()")[-1] == 0,
+       page.evaluate("T.videoAsks()"))
+
     print("== switching, including back to the desktop, is one tap in the strip ==")
+    page.evaluate("T.markVideo()")
     ok("the strip switches apps directly", page.evaluate("T.tapSwitch('files')"))
     page.wait_for_timeout(250)
+    # ONE ASK PER CHANGE.  Moving between two full-screen apps changes nothing about the desktop, and
+    # a control channel that also carries the quality ladder must not collect a message per tap.
+    ok("switching between two full-screen apps asks for nothing at all",
+       page.evaluate("T.videoAsks()") == [], page.evaluate("T.videoAsks()"))
     ok("the file browser is up and full, the device manager put away",
        page.evaluate("T.isFull('filesPanel')")
        and page.evaluate("T.warpVisible()") == "none"
@@ -553,10 +624,14 @@ with sync_playwright() as pw:
        page.evaluate("T.switchEntries()"))
     ok("and the chip that says where you are is not the one scrolled off the end",
        page.evaluate("T.currentVisible()"))
+    page.evaluate("T.markVideo()")
     ok("the desktop is reachable from the strip", page.evaluate("T.tapSwitch('desktop')"))
     page.wait_for_timeout(250)
     ok("choosing it puts every panel away — which is what showing the desktop MEANS",
        page.evaluate("T.warpVisible()") == "none" and page.evaluate("T.filesVisible()") == "none")
+    ok("leaving for the desktop turns the video back on, exactly once",
+       page.evaluate("T.videoAsks()") == [1] and not page.evaluate("T.vidHidden()"),
+       page.evaluate("T.videoAsks()"))
     ok("and the strip goes with them: nothing is full, so there is an edge again",
        not page.evaluate("T.switchOn()"))
 
@@ -602,7 +677,7 @@ with sync_playwright() as pw:
     page.evaluate("window.dropApp = 'files'")
     ok("both apps are offered to begin with, because nothing has been asked",
        page.evaluate("T.openMenu()")
-       and [e[2] for e in page.evaluate("T.entries()")] == [False, False, False],
+       and [e[2] for e in page.evaluate("T.entries()")] == [False, False],
        page.evaluate("T.entries()"))
     ok("the device manager answers", page.evaluate("T.openWarp()"))
     page.wait_for_function("T.warpRows().length > 0", timeout=15000)
@@ -622,9 +697,7 @@ with sync_playwright() as pw:
     ok("captioned with why, BEFORE the tap rather than after it",
        files_entry[3] == "not served by this box", entries)
     ok("it is still LISTED, though — a client that asked and heard nothing may not claim the app "
-       "was never there", [e[0] for e in entries] == ["desktop", "devices", "files"], entries)
-    ok("and the desktop is never struck out — it is served by definition",
-       next(e for e in entries if e[0] == "desktop")[2] is False, entries)
+       "was never there", [e[0] for e in entries] == ["devices", "files"], entries)
     ok("picking it does nothing at all", page.evaluate("T.openFiles()") is False)
     ok("and the app that does answer is untouched",
        page.evaluate("T.openWarp()") and page.evaluate("T.warpRows()")[:2]
