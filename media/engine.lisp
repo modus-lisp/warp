@@ -23,6 +23,24 @@
 
 (in-package #:warp-media)
 
+;;; ---- handing values between threads ------------------------------------------------------------
+;;;
+;;; THE WORKER SENDS, IT DOES NOT SHARE.  Everything the worker decodes -- frames, samples, the
+;;; numbers and strings it learns about the file -- reaches the player's slots through %SHARE, and
+;;; the big buffers are made shared to begin with.  On SBCL that is the identity and nothing changes.
+;;; On modus, threads share no memory: a thread's objects die with its region, and storing one where
+;;; another thread can reach it is refused (modus's shared-store guard).  There %SHARE is
+;;; MODUS:SHARE -- a copy into shared memory, the value as a message -- and a picture is decoded
+;;; straight into a buffer from MODUS:MAKE-SHARED-ARRAY, so the 700 KB of it is never copied.
+
+(defun %share (x)
+  #+modus (modus:share x)
+  #-modus x)
+
+(defun %shared-octets (n)
+  #+modus (modus:make-shared-array n :element-type '(unsigned-byte 8))
+  #-modus (make-array n :element-type '(unsigned-byte 8)))
+
 (defconstant +rate+ 48000)
 (defconstant +frame-samples+ 960 "20 ms at 48 kHz — one mixer tick.")
 (defparameter *audio-queue-max* 64 "Audio frames decoded ahead: 1.28 s.")
@@ -112,10 +130,12 @@
                (if f (max (%base p) (vf-timestamp f)) (player-clock-seconds p))))))
     (if (player-duration p) (min s (player-duration p)) s)))
 
-(defun %wall-run (p) (unless (%wall-start p) (setf (%wall-start p) (%now))))
+;; Both run on whichever thread changes the state -- the decoder going live, the end of a track --
+;; so the doubles they store are shared (%SHARE).
+(defun %wall-run (p) (unless (%wall-start p) (setf (%wall-start p) (%share (%now)))))
 (defun %wall-hold (p)
   (when (%wall-start p)
-    (incf (%wall-accum p) (- (%now) (%wall-start p)))
+    (setf (%wall-accum p) (%share (+ (%wall-accum p) (- (%now) (%wall-start p)))))
     (setf (%wall-start p) nil)))
 
 ;;; ---- the source thunk: the mixer's end -----------------------------------------------------------
@@ -140,7 +160,7 @@
       (serious-condition (e)
         ;; this runs on the mixer's 20 ms thread: a decode problem is one silent frame and a
         ;; state, never an escaping condition
-        (setf (player-state p) :error (player-error p) (princ-to-string e))
+        (setf (player-state p) :error (player-error p) (%share (princ-to-string e)))
         nil))))
 
 (defun attach-mixer (p mixer &key (name "media") (gain 1.0d0))
@@ -262,17 +282,20 @@
     (with-player (p)
       (%reset-locked p)
       (setf (player-state p) :loading
-            (player-track p) (pathname path)
-            (player-title p) (pathname-name path)
+            (player-track p) (%share (pathname path))
+            (player-title p) (%share (pathname-name path))
             (player-duration p) nil
             (player-has-video-p p) nil (%has-audio p) nil
             (player-frame p) nil
-            (%base p) (float from 1d0)
+            (%base p) (%share (float from 1d0))
             (%worker-done p) nil)
       (let ((gen (%generation p)))
-        (setf (%worker p)
-              (bt:make-thread (lambda () (%run-worker p gen kind path from))
-                              :name "warp-media-decode"))))
+        ;; Kept as a handle only, and nothing reads it but a later open; the decoder is told to
+        ;; stop by generation.  Not shared: a thread object is not a message.
+        (let ((th (bt:make-thread (lambda () (%run-worker p gen kind path from))
+                                  :name "warp-media-decode")))
+          #-modus (setf (%worker p) th)
+          #+modus th)))
     (player-state p)))
 
 (defun play-index (p i)
@@ -324,7 +347,7 @@
       (unless (%live-p p gen) (return-from %push-audio nil))
       (when (with-player (p)
               (when (< (%audio-n p) *audio-queue-max*)
-                (setf (%audio-q p) (nconc (%audio-q p) (list f)))
+                (setf (%audio-q p) (nconc (%audio-q p) (%share (list f))))
                 (incf (%audio-n p))
                 t))
         (return))
@@ -335,7 +358,7 @@
     (unless (%live-p p gen) (return-from %push-video nil))
     (when (with-player (p)
             (when (< (%video-n p) *video-queue-max*)
-              (setf (%video-q p) (nconc (%video-q p) (list frame)))
+              (setf (%video-q p) (nconc (%video-q p) (%share (list frame))))
               (incf (%video-n p))
               t))
       (return t))
@@ -347,8 +370,8 @@
     (when (%live-p p gen)
       (setf (player-has-video-p p) has-video
             (%has-audio p) (and has-audio (player-mixer p) t)
-            (player-duration p) duration)
-      (when title (setf (player-title p) title))
+            (player-duration p) (%share duration))
+      (when title (setf (player-title p) (%share title)))
       (when (eq (player-state p) :loading)
         (setf (player-state p) :playing)
         (%wall-run p))
@@ -358,7 +381,7 @@
 (defun %fail (p gen e)
   (with-player (p)
     (when (%live-p p gen)
-      (setf (player-state p) :error (player-error p) (princ-to-string e)))))
+      (setf (player-state p) :error (player-error p) (%share (princ-to-string e))))))
 
 (defun %run-worker (p gen kind path from)
   (handler-case
@@ -393,15 +416,15 @@
 
 (defun %picture->frame (pic no)
   (let* ((w (cassette:picture-width pic)) (h (cassette:picture-height pic))
-         (rgb (make-array (* w h 3) :element-type '(unsigned-byte 8))))
+         (rgb (%shared-octets (* w h 3))))
     (cassette:picture->rgb-into pic rgb)
-    (make-video-frame :w w :h h :rgb rgb :no no
-                      :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0))))
+    (%share (make-video-frame :w w :h h :rgb rgb :no no
+                              :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0)))))
 
 (defun %audio-gave-up (p gen e)
   "The audio track would not decode.  Say so where the transport shows it, and play the picture."
   (with-player (p)
-    (when (%live-p p gen) (setf (player-error p) (format nil "audio stopped: ~a" e)))))
+    (when (%live-p p gen) (setf (player-error p) (%share (format nil "audio stopped: ~a" e))))))
 
 (defun %video-gave-up (p gen e any-frames-p)
   "The video track stopped decoding part way through.  Keep playing the sound.
@@ -415,7 +438,7 @@
   (with-player (p)
     (when (%live-p p gen)
       (unless any-frames-p (setf (player-has-video-p p) nil))
-      (setf (player-error p) (format nil "video stopped: ~a" e)))))
+      (setf (player-error p) (%share (format nil "video stopped: ~a" e))))))
 
 (defun %run-container (p gen path from)
   "Play a WebM or an MP4: video through cassette (VP8 or H.264), audio through whichever decoder
@@ -445,7 +468,7 @@
                     ;; and the two want different things from whoever is listening.
                     (let ((m (handler-case (%mp4-aac-mono path)
                                (serious-condition (e) (%audio-gave-up p gen e) nil))))
-                      (when m (with-player (p) (setf (%pcm-cache p) (cons path m))) m)))))
+                      (when m (with-player (p) (setf (%pcm-cache p) (%share (cons path m)))) m)))))
          (aac-pos (if aac (min (length aac) (floor (* start +rate+))) 0))
          (carry (make-array 0 :element-type '(signed-byte 16)))
          (no 0))
@@ -455,8 +478,8 @@
     (let ((note (cassette:player-video-note wp)))
       (when (and note (null vt))
         (with-player (p)
-          (when (%live-p p gen) (setf (player-error p) (format nil "video stopped: ~a" note))))))
-    (with-player (p) (when (%live-p p gen) (setf (%base p) start)))
+          (when (%live-p p gen) (setf (player-error p) (%share (format nil "video stopped: ~a" note)))))))
+    (with-player (p) (when (%live-p p gen) (setf (%base p) (%share start))))
     (%go-live p gen :has-video (and vt t) :has-audio (or (and at t) (and aac t))
               :duration (or duration (and aac (/ (length aac) (float +rate+ 1d0)))))
     (labels ((pump-audio-to (target)
@@ -583,7 +606,7 @@
      (let* ((bytes (cassette::slurp-file path))
             (idx (let ((c (%mp3-index-for p path)))
                    (or c (let ((i (%build-mp3-index bytes)))
-                           (with-player (p) (setf (%mp3-index p) (cons path i))) i))))
+                           (with-player (p) (setf (%mp3-index p) (%share (cons path i)))) i))))
             (off (if (plusp from) (%mp3-offset idx from) (mi-first idx)))
             (rp (reed:make-mp3-player bytes :rate +rate+ :frame-samples +frame-samples+ :start off)))
        (%go-live p gen :has-video nil :has-audio t :duration (mi-duration idx))
@@ -599,7 +622,7 @@
                                  (:opus (%pcm->mono-48k (reed:decode-opus-file path)))
                                  (:aac (%pcm->mono-48k (reed:decode-aac-file path)))
                                  (:mp4 (%mp4-aac-mono path)))))
-                        (with-player (p) (setf (%pcm-cache p) (cons path m)))
+                        (with-player (p) (setf (%pcm-cache p) (%share (cons path m))))
                         m)))
             (n (length mono)))
        (%go-live p gen :has-video nil :has-audio t :duration (/ n (float +rate+ 1d0)))
