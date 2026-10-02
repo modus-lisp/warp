@@ -198,10 +198,28 @@ ordinary presentation — the protocol carries no coordinates and does not need 
           (string-downcase (or (pathname-type (row-path r)) ""))
           (if current (player-state p) :track))))
 
+;;; ONE READING OF THE CLOCK PER PASS.  Each of the +SEEK-CELLS+ cells asked the player for its
+;;; position -- twice -- and its duration, and every position takes the player's lock: the seek
+;;; bar was most of what a layout cost.  LAY-OUT binds *SEEK-READING* to a fresh cell; the first
+;;; seek cell presented fills it and the rest read it, so the bar is also drawn from ONE instant
+;;; rather than 32 slightly different ones.  Unbound (a PRESENT outside a pass) reads the player.
+(defvar *seek-reading* nil "NIL, or a cons (PLAYER . (TRACK DURATION POSITION)) for this pass.")
+
+(defun %seek-reading (p)
+  "(values track duration position) of player P, once per layout pass."
+  (let ((cell *seek-reading*))
+    (if (and cell (eq (car cell) p))
+        (values-list (cdr cell))
+        (let ((r (list (player-track p) (player-duration p) (player-position p))))
+          (when cell (setf (car cell) p (cdr cell) r))
+          (values-list r)))))
+
 (defmethod present ((tr transport) (type (eql 'media-transport)) (view (eql 'media-view)))
   (let ((p (library-player (transport-library tr))))
     (list (or (player-title p) "—")
-          (format nil "~a / ~a" (mmss (player-position p)) (mmss (player-duration p)))
+          (multiple-value-bind (track dur pos) (%seek-reading p)
+            (declare (ignore track))
+            (format nil "~a / ~a" (mmss pos) (mmss dur)))
           (player-state p)
           (or (player-error p) ""))))
 
@@ -220,10 +238,10 @@ ordinary presentation — the protocol carries no coordinates and does not need 
 
 (defmethod present ((c seek-cell) (type (eql 'media-seek)) (view (eql 'media-view)))
   "Filled, or not.  Two states per cell means a second of playback changes at most one cell."
-  (let* ((p (library-player (cell-library c))) (dur (player-duration p)))
-    (list (cond ((or (null dur) (not (plusp dur)) (null (player-track p))) :empty)
-                ((>= (player-position p) (* dur (/ (1+ (cell-index c)) +seek-cells+))) :filled)
-                ((>= (player-position p) (* dur (/ (cell-index c) +seek-cells+))) :head)
+  (multiple-value-bind (track dur pos) (%seek-reading (library-player (cell-library c)))
+    (list (cond ((or (null dur) (not (plusp dur)) (null track)) :empty)
+                ((>= pos (* dur (/ (1+ (cell-index c)) +seek-cells+))) :filled)
+                ((>= pos (* dur (/ (cell-index c) +seek-cells+))) :head)
                 (t :empty)))))
 
 (defmethod present ((n picture-node) (type (eql 'media-picture)) (view (eql 'media-view)))

@@ -47,7 +47,8 @@ encoding's consumer class."))
 ;;; ---- lay-out ---------------------------------------------------------------------------------------
 
 (defmethod lay-out ((c media-consumer) objects as-of)
-  (let ((sel (consumer-selected c)) (out '()) (i 0) (prev nil) (view (consumer-view c)))
+  (let ((sel (consumer-selected c)) (out '()) (i 0) (prev nil) (view (consumer-view c))
+        (*seek-reading* (cons nil nil)))      ; one clock reading for the pass (model.lisp)
     (multiple-value-bind (lo hi) (visible-list-rows c)
       (dolist (o objects)
         (let* ((ty (row-type o)) (key (presentation-key ty o)) (extent nil) (emit t))
