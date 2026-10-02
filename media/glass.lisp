@@ -152,23 +152,33 @@
     ;; the mat, where the picture does not reach
     (when (< dh h) (glass:fb-rect fb x y w (- oy y) +mat+) (glass:fb-rect fb x (+ oy dh) w (- (+ y h) oy dh) +mat+))
     (when (< dw w) (glass:fb-rect fb x oy (- ox x) dh +mat+) (glass:fb-rect fb (+ ox dw) oy (- (+ x w) ox dw) dh +mat+))
-    (dotimes (dy dh)
-      (let* ((sy (min (1- fh) (floor (* dy fh) dh)))
-             (srow (* sy fw))
-             (ty (+ oy dy)))
-        (declare (type fixnum sy srow ty))
-        (when (and (>= ty 0) (< ty fbh))
-          (let ((drow (* ty stride)))
-            (declare (type fixnum drow))
-            (dotimes (dx dw)
-              (let* ((sx (min (1- fw) (floor (* dx fw) dw)))
-                     (si (* 3 (+ srow sx)))
-                     (tx (+ ox dx)))
-                (declare (type fixnum sx si tx))
-                (when (and (>= tx 0) (< tx stride))
-                  (setf (aref px (+ drow tx))
-                        (logior (ash (aref rgb si) 16) (ash (aref rgb (+ si 1)) 8) (aref rgb (+ si 2)))))))))))
+    ;; The source column of each destination column, once per frame rather than a FLOOR per
+    ;; pixel, already clipped to the framebuffer: X0..X1 are the destination columns that land.
+    (let* ((x0 (max 0 (- ox))) (x1 (min dw (- stride ox)))
+           (xmap (%blit-xmap fw dw)))
+      (declare (type fixnum x0 x1) (type (simple-array fixnum (*)) xmap))
+      (dotimes (dy dh)
+        (let* ((sy (min (1- fh) (floor (* dy fh) dh)))
+               (srow (* 3 sy fw))
+               (ty (+ oy dy)))
+          (declare (type fixnum sy srow ty))
+          (when (and (>= ty 0) (< ty fbh))
+            (let ((drow (+ (* ty stride) ox)))
+              (declare (type fixnum drow))
+              (loop for dx of-type fixnum from x0 below x1
+                    do (let ((si (+ srow (aref xmap dx))))
+                         (declare (type fixnum si))
+                         (setf (aref px (+ drow dx))
+                               (logior (ash (aref rgb si) 16) (ash (aref rgb (+ si 1)) 8)
+                                       (aref rgb (+ si 2)))))))))))
     (glass:fb-touch fb)))
+
+(defun %blit-xmap (fw dw)
+  "For each of DW destination columns, the byte offset in a source row (3 per pixel) of the
+   column nearest-neighbour picks from FW.  DW divisions a frame instead of one per pixel."
+  (let ((m (make-array dw :element-type 'fixnum)))
+    (dotimes (dx dw m)
+      (setf (aref m dx) (* 3 (min (1- fw) (floor (* dx fw) dw)))))))
 
 ;;; ---- a window -------------------------------------------------------------------------------------------------
 
