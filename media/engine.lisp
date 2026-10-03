@@ -454,12 +454,21 @@
          (n (floor (length samples) ch))
          (raw (make-array n :element-type '(signed-byte 16)))
          (frames '()))
-    (dotimes (i n)
-      (let ((acc 0d0))
-        (dotimes (c ch) (incf acc (aref samples (+ (* i ch) c))))
-        (setf (aref raw i)
-              (let ((v (round (* (/ acc ch) 32767))))
-                (max -32768 (min 32767 v))))))
+    ;; THE PCM SAYS ITS SCALE (reed's FORMAT tag): :FLOAT32 is [-1,1] (Vorbis, Opus), :PCM16 is
+    ;; already 16-bit (FLAC).  Scaling the second by 32767 too clipped every FLAC sample to the
+    ;; rails -- a tone became a square wave.  The integer case stays integer, which is also the
+    ;; fast one on modus.
+    (if (eq (reed:pcm-format pcm) :pcm16)
+        (dotimes (i n)
+          (let ((acc 0))
+            (dotimes (c ch) (incf acc (aref samples (+ (* i ch) c))))
+            (setf (aref raw i) (max -32768 (min 32767 (floor acc ch))))))
+        (dotimes (i n)
+          (let ((acc 0d0))
+            (dotimes (c ch) (incf acc (aref samples (+ (* i ch) c))))
+            (setf (aref raw i)
+                  (let ((v (round (* (/ acc ch) 32767))))
+                    (max -32768 (min 32767 v)))))))
     (let* ((conv (if rs (%convert-rate rs raw) raw))
            (mono (make-array (+ (length carry) (length conv)) :element-type '(signed-byte 16)))
            (pos 0) (total (+ (length carry) (length conv))))
