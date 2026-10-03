@@ -154,6 +154,16 @@
                 ;; promote what the clock allows first, since nobody else may be looking
                 ((and (%worker-done p) (%has-audio p))
                  (%present-locked p)
+                 ;; THE SOUND IS THE CLOCK AND IT HAS STOPPED, so a picture stamped past the
+                 ;; last sample can never come due by it (a 6.5 s Vorbis track whose last frame
+                 ;; is at 6.519 played to the end and never ENDED).  Within a tenth of a second
+                 ;; of the clock, put it up now; a picture that outlasts its sound by more than
+                 ;; that still waits, as before.
+                 (let ((clock (player-clock-seconds p)) (shown nil))
+                   (loop while (and (%video-q p)
+                                    (<= (vf-timestamp (first (%video-q p))) (+ clock 0.1d0)))
+                         do (setf shown (pop (%video-q p))) (decf (%video-n p)))
+                   (when shown (setf (player-frame p) shown (player-frame-no p) (vf-no shown))))
                  (when (null (%video-q p)) (%finish-locked p))
                  nil)
                 (t nil)))))
@@ -393,22 +403,68 @@
 
 ;;; ---- WebM: video and Opus, interleaved --------------------------------------------------------------
 
-(defun %pcm->mono-frames (pcm carry)
-  "reed's float32 PCM struct (48 kHz, interleaved) -> a list of 960-sample s16 mono frames.
-   CARRY is the partial frame left over from last time; returns (values frames new-carry)."
+;;; RATE CONVERSION FOR PLAYBACK.  reed's resampler is the right one -- a windowed sinc, stateful
+;;; across packets -- and on modus it makes 32 000 samples a second, short of the 48 000 a second
+;;; it must make (double-float arithmetic is modus's slow path today).  So on modus the player
+;;; converts by linear interpolation in 16.16 fixed point: fixnum arithmetic only, and good enough
+;;; for a phone's speaker.  Everywhere else it is reed's.
+(defstruct (%lin-rs (:constructor %make-lin-rs (step)))
+  (step 0 :type fixnum)      ; input samples per output sample, 16.16
+  (pos 0 :type fixnum)       ; next output's position, 16.16, counted from PREV
+  (prev 0 :type fixnum))     ; the last input sample of the previous block
+
+(defun %make-rate-converter (in out)
+  #+modus (%make-lin-rs (floor (* in 65536) out))
+  #-modus (reed:make-resampler in out))
+
+(defun %lin-resample (rs raw)
+  "RAW (s16) through linear converter RS; returns the s16 output it makes now."
+  (declare (type (simple-array (signed-byte 16) (*)) raw))
+  (let* ((n (length raw)) (step (%lin-rs-step rs)) (pos (%lin-rs-pos rs)) (prev (%lin-rs-prev rs))
+         (count (if (< pos (* n 65536)) (ceiling (- (* n 65536) pos) step) 0))
+         (out (make-array count :element-type '(signed-byte 16))))
+    (declare (type fixnum n step pos prev count))
+    ;; the stream is PREV, RAW[0], RAW[1], ...: index I of it is RAW[I-1]
+    (dotimes (k count)
+      (let* ((i (ash pos -16)) (f (logand pos #xFFFF))
+             (a (if (= i 0) prev (aref raw (1- i))))
+             (b (aref raw i)))
+        (declare (type fixnum i f a b))
+        (setf (aref out k) (ash (+ (* a (- 65536 f)) (* b f)) -16))
+        (incf pos step)))
+    (when (plusp n)
+      (setf (%lin-rs-prev rs) (aref raw (1- n))
+            (%lin-rs-pos rs) (- pos (* n 65536))))
+    out))
+
+(defun %convert-rate (rs raw)
+  (if (%lin-rs-p rs) (%lin-resample rs raw) (reed:resample rs raw)))
+
+(defun %pcm->mono-frames (pcm carry &optional rs)
+  "reed's float32 PCM struct (interleaved) -> a list of 960-sample s16 mono frames at 48 kHz.
+   CARRY is the partial frame left over from last time; returns (values frames new-carry).
+
+   RS, a reed resampler from the decoder's rate to +RATE+, when the two differ.  The frames ARE
+   the clock (PLAYER-POSITION counts the samples the mixer took), so 22.05 kHz Vorbis framed as
+   if it were 48 kHz did not just play fast: the clock ran at less than half speed, every
+   picture came due late, and once the picture queue filled the decoder stopped -- sound and
+   all.  Stateful, so the caller keeps one for the stream."
   (let* ((samples (reed:pcm-samples pcm))
          (ch (reed:pcm-channels pcm))
          (n (floor (length samples) ch))
-         (mono (make-array (+ (length carry) n) :element-type '(signed-byte 16)))
+         (raw (make-array n :element-type '(signed-byte 16)))
          (frames '()))
-    (replace mono carry)
     (dotimes (i n)
       (let ((acc 0d0))
         (dotimes (c ch) (incf acc (aref samples (+ (* i ch) c))))
-        (setf (aref mono (+ (length carry) i))
+        (setf (aref raw i)
               (let ((v (round (* (/ acc ch) 32767))))
                 (max -32768 (min 32767 v))))))
-    (let ((pos 0) (total (length mono)))
+    (let* ((conv (if rs (%convert-rate rs raw) raw))
+           (mono (make-array (+ (length carry) (length conv)) :element-type '(signed-byte 16)))
+           (pos 0) (total (+ (length carry) (length conv))))
+      (replace mono carry)
+      (replace mono conv :start1 (length carry))
       (loop while (<= (+ pos +frame-samples+) total)
             do (push (subseq mono pos (+ pos +frame-samples+)) frames)
                (incf pos +frame-samples+))
@@ -471,6 +527,7 @@
                       (when m (with-player (p) (setf (%pcm-cache p) (%share (cons path m)))) m)))))
          (aac-pos (if aac (min (length aac) (floor (* start +rate+))) 0))
          (carry (make-array 0 :element-type '(signed-byte 16)))
+         (rs nil)                         ; the audio's rate -> +RATE+, made on first packet
          (no 0))
     (declare (type fixnum aac-pos no))
     ;; a video track the container refused outright — a codec we do not decode, or parameter sets
@@ -497,7 +554,9 @@
                     (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
                       (unless pcm (return t))
                       (when (>= ts (- start 0.0105d0))
-                        (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry)
+                        (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
+                          (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
+                        (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
                           (setf carry c)
                           (unless (%push-audio p gen frames) (return nil))))
                       (when (> ts target) (return t)))))
