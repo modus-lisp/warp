@@ -48,4 +48,4 @@
            #:sf-painted #:sf-emitted #:sf-passes #:sf-deferred #:sf-stop
            #:sf-menu #:sf-last-result
            #:make-surface-app #:on-pointer #:+menu-w+ #:+menu-row+
-           #:+bg+ #:+row-bg+ #:+row-sel+ #:+fg+ #:+dim+ #:+ok+ #:+warn+ #:+bad+ #:trend-colour #:fb-text-baseline #:row-baseline #:text-ascent))
+           #:+bg+ #:+row-bg+ #:+row-sel+ #:+fg+ #:+dim+ #:+ok+ #:+warn+ #:+bad+ #:trend-colour #:fb-icon #:fb-text-baseline #:row-baseline #:text-ascent))

@@ -39,12 +39,17 @@
 
 ;;; ---- where things are ---------------------------------------------------------------------------------
 
-(defmethod m:picture-height ((c media-fb-consumer)) (declare (ignore c)) +picture-h+)
+(defun %picture-h (c)
+  "16:9 of the window's width, in whole macroblocks: +PICTURE-H+ at the 512-pixel width the
+   window was drawn for, and no black bars in a narrower one (a phone's 393 points)."
+  (* 16 (max 1 (round (* (viewport-width c) 9) (* 16 16)))))
+
+(defmethod m:picture-height ((c media-fb-consumer)) (%picture-h c))
 
 (defmethod m:picture-place ((c media-fb-consumer))
-  (snap-extent 0 0 (viewport-width c) +picture-h+))
+  (snap-extent 0 0 (viewport-width c) (%picture-h c)))
 
-(defun %transport-y (c) (if (m:has-picture-p c) +picture-h+ 0))
+(defun %transport-y (c) (if (m:has-picture-p c) (%picture-h c) 0))
 
 (defmethod m:transport-place ((c media-fb-consumer))
   ;; the title/clock row takes what the four controls leave
@@ -95,9 +100,15 @@
       (m:media-control
        (glass:fb-rect fb x y w h (if sel g:+row-sel+ +control-bg+))
        (glass:fb-vline fb x y h g:+bg+)
-       (let ((s (princ-to-string (%cell p 0))))
-         (g:fb-text-baseline fb (+ x (floor (- w (glass:text-width s :size 13)) 2)) (g:row-baseline y h 13) s
-                             :size 13 :color g:+fg+)))
+       ;; the glyph cell is an icon name: drawn as the icon, or as its text fallback if this
+       ;; encoding cannot draw it ("PAUSE" in a 48-pixel box was clipped on a phone)
+       (let* ((cell (%cell p 0)) (sz 20))
+         (unless (and (keywordp cell)
+                      (g:fb-icon fb cell (+ x (floor (- w sz) 2)) (+ y (floor (- h sz) 2)) sz g:+fg+))
+           (let ((s (let ((ic (and (keywordp cell) (warp:icon cell))))
+                      (if ic (warp::icon-fallback ic) (princ-to-string cell)))))
+             (g:fb-text-baseline fb (+ x (floor (- w (glass:text-width s :size 13)) 2)) (g:row-baseline y h 13) s
+                                 :size 13 :color g:+fg+)))))
       (m:media-head
        (glass:fb-rect fb x y w h +head-bg+)
        (g:fb-text-baseline fb (+ x 8) (g:row-baseline y h 12)
