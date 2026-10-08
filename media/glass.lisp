@@ -147,6 +147,22 @@
       (t (%blit-frame fb f x y w h)))))
 
 (defun %blit-frame (fb f x y w h)
+  (if (m:vf-y f)
+      (%blit-frame-yuv fb f x y w h)
+      (%blit-frame-rgb fb f x y w h)))
+
+(defun %blit-frame-yuv (fb f x y w h)
+  "A Y'CbCr frame (WARP-MEDIA:*FRAME-FORMAT* :I420) into an :I420 framebuffer: planes straight
+   in, scaled nearest-neighbour, letterboxed -- never through RGB."
+  (let* ((fw (m:vf-w f)) (fh (m:vf-h f))
+         (scale (min (/ w fw) (/ h fh)))
+         (dw (max 1 (floor (* fw scale)))) (dh (max 1 (floor (* fh scale))))
+         (ox (+ x (floor (- w dw) 2))) (oy (+ y (floor (- h dh) 2))))
+    (when (< dh h) (glass:fb-rect fb x y w (- oy y) +mat+) (glass:fb-rect fb x (+ oy dh) w (- (+ y h) oy dh) +mat+))
+    (when (< dw w) (glass:fb-rect fb x oy (- ox x) dh +mat+) (glass:fb-rect fb (+ ox dw) oy (- (+ x w) ox dw) dh +mat+))
+    (glass:fb-blit-yuv fb ox oy dw dh (m:vf-y f) (m:vf-u f) (m:vf-v f) fw fh fw (ceiling fw 2))))
+
+(defun %blit-frame-rgb (fb f x y w h)
   "Nearest-neighbour scale of the frame's RGB into the WxH band at (X,Y), aspect preserved.
    Writes the framebuffer's pixel vector directly: this runs 30 times a second."
   (declare (optimize (speed 3) (safety 0)))

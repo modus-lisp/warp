@@ -60,9 +60,15 @@
 
 ;;; ---- a decoded picture ---------------------------------------------------------------------------
 
+(defvar *frame-format* :rgb
+  "What a decoded picture becomes: :RGB (packed 8-bit RGB, VF-RGB) or :I420 (its own planes,
+   VF-Y/-U/-V, tightly packed) -- for a framebuffer that is Y'CbCr itself (glass :I420), so a
+   picture goes from the decoder to the screen without ever being RGB.")
+
 (defstruct (video-frame (:conc-name vf-))
   (w 0 :type fixnum) (h 0 :type fixnum)
-  (rgb nil)                                     ; packed 8-bit RGB, w*h*3 octets
+  (rgb nil)                                     ; packed 8-bit RGB, w*h*3 octets, or NIL
+  (y nil) (u nil) (v nil)                       ; :I420 planes, w*h and ceil(w/2)*ceil(h/2)
   (no 0 :type fixnum)                           ; monotonically increasing; the fingerprint's part
   (timestamp 0d0 :type double-float))           ; seconds
 
@@ -593,13 +599,30 @@
                (incf pos +frame-samples+))
       (values (nreverse frames) (subseq mono pos)))))
 
+(defun %copy-plane (src off stride w h)
+  "Rows W wide of a plane at OFF, STRIDE apart, as one tight W*H vector (a copy: the decoder
+   reuses its planes as references for the frames after)."
+  (let ((out (%shared-octets (* w h))))
+    (dotimes (r h out)
+      (replace out src :start1 (* r w) :start2 (+ off (* r stride)) :end2 (+ off (* r stride) w)))))
+
 (defun %picture->frame (pic no)
   (let* ((w (cassette:picture-width pic)) (h (cassette:picture-height pic))
-         (rgb (%shared-octets (* w h 3))))
-    (cassette:picture->rgb-into pic rgb)
-    ;; Not %SHARE'd here: the frame travels in a message, and %POST shares the message.
-    (make-video-frame :w w :h h :rgb rgb :no no
-                      :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0))))
+         (ts (float (or (cassette:picture-timestamp pic) 0d0) 1d0)))
+    ;; Not %SHARE'd here: the frame travels in a message, and %POST shares the message.  Its
+    ;; planes or pixels are %SHARED-OCTETS already, so the big part is never copied.
+    (if (eq *frame-format* :i420)
+        (let ((cw (ceiling w 2)) (ch (ceiling h 2))
+              (cs (cassette:picture-uv-stride pic)) (co (cassette:picture-uv-offset pic)))
+          (make-video-frame
+           :w w :h h :no no :timestamp ts
+           :y (%copy-plane (cassette:picture-y pic) (cassette:picture-y-offset pic)
+                           (cassette:picture-y-stride pic) w h)
+           :u (%copy-plane (cassette:picture-u pic) co cs cw ch)
+           :v (%copy-plane (cassette:picture-v pic) co cs cw ch)))
+        (let ((rgb (%shared-octets (* w h 3))))
+          (cassette:picture->rgb-into pic rgb)
+          (make-video-frame :w w :h h :rgb rgb :no no :timestamp ts)))))
 
 (defun %audio-gave-up (lk e)
   "The audio track would not decode.  Say so where the transport shows it, and play the picture."
