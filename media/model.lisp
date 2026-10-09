@@ -216,11 +216,16 @@ ordinary presentation — the protocol carries no coordinates and does not need 
 (defvar *seek-reading* nil "NIL, or a cons (PLAYER . (TRACK DURATION POSITION)) for this pass.")
 
 (defun %seek-reading (p)
-  "(values track duration position) of player P, once per layout pass."
+  "(values track duration position reached) of player P, once per layout pass.  REACHED is how
+   many of the +SEEK-CELLS+ the position has passed, FLOOR (pos * cells / dur), or NIL: the cells
+   compare their index against it rather than each multiplying the duration by its own fraction --
+   which, with rational seconds, was bignum arithmetic 64 times a pass and the costliest present."
   (let ((cell *seek-reading*))
     (if (and cell (eq (car cell) p))
         (values-list (cdr cell))
-        (let ((r (list (player-track p) (player-duration p) (player-position p))))
+        (let* ((track (player-track p)) (dur (player-duration p)) (pos (player-position p))
+               (r (list track dur pos
+                        (and track dur pos (plusp dur) (floor (* pos +seek-cells+) dur)))))
           (when cell (setf (car cell) p (cdr cell) r))
           (values-list r)))))
 
@@ -248,10 +253,12 @@ ordinary presentation — the protocol carries no coordinates and does not need 
 
 (defmethod present ((c seek-cell) (type (eql 'media-seek)) (view (eql 'media-view)))
   "Filled, or not.  Two states per cell means a second of playback changes at most one cell."
-  (multiple-value-bind (track dur pos) (%seek-reading (library-player (cell-library c)))
-    (list (cond ((or (null dur) (not (plusp dur)) (null track)) :empty)
-                ((>= pos (* dur (/ (1+ (cell-index c)) +seek-cells+))) :filled)
-                ((>= pos (* dur (/ (cell-index c) +seek-cells+))) :head)
+  (multiple-value-bind (track dur pos reached) (%seek-reading (library-player (cell-library c)))
+    (declare (ignore track dur pos))
+    ;; pos >= dur*(i+1)/N  <=>  i+1 <= floor(pos*N/dur), and likewise for i: integers only
+    (list (cond ((null reached) :empty)
+                ((< (cell-index c) reached) :filled)
+                ((<= (cell-index c) reached) :head)
                 (t :empty)))))
 
 (defmethod present ((n picture-node) (type (eql 'media-picture)) (view (eql 'media-view)))
