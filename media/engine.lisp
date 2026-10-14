@@ -505,10 +505,13 @@
           (:done (setf (%worker-done p) t)))))))
 
 (defun %run-worker (lk kind path from has-mixer pcm idx)
+  ;; reed's decoder tables are built on first use; this thread gets its own (on modus a worker
+  ;; may not fill the loading thread's).
   (handler-case
-      (ecase kind
-        ((:webm :mp4 :mpegsys) (%run-container lk path from has-mixer pcm))
-        ((:mp3 :opus :aac) (%run-audio-file lk kind path from pcm idx)))
+      (reed:with-thread-state ()
+        (ecase kind
+          ((:webm :mp4 :mpegsys) (%run-container lk path from has-mixer pcm))
+          ((:mp3 :opus :aac) (%run-audio-file lk kind path from pcm idx))))
     (serious-condition (e) (%fail lk e)))
   (when (%live-p lk) (%post lk (list :done))))
 
