@@ -594,8 +594,9 @@
   (let* ((w (cassette:picture-width pic)) (h (cassette:picture-height pic))
          (rgb (%shared-octets (* w h 3))))
     (cassette:picture->rgb-into pic rgb)
-    (%share (make-video-frame :w w :h h :rgb rgb :no no
-                              :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0)))))
+    ;; Not %SHARE'd here: the frame travels in a message, and %POST shares the message.
+    (make-video-frame :w w :h h :rgb rgb :no no
+                      :timestamp (float (or (cassette:picture-timestamp pic) 0d0) 1d0))))
 
 (defun %audio-gave-up (lk e)
   "The audio track would not decode.  Say so where the transport shows it, and play the picture."

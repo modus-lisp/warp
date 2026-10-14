@@ -60,6 +60,11 @@
           (setf (gethash name *icon-polygons*) (or polys :none))
           polys))))
 
+;;; Every icon is parsed NOW, while this file loads, and the table is only read after.  The first
+;;; draw used to fill it, from whichever thread drew first -- on modus the glass desk's compositor,
+;;; whose store into a table the loading thread made is refused (threads share no state).
+(dolist (name (warp::icon-names)) (%icon-polygons name))
+
 (defun %inside-p (polys px py)
   "Even-odd: is (PX,PY) inside POLYS?"
   (let ((in nil))
