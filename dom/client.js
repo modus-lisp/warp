@@ -582,22 +582,68 @@ function makeWarpClient(opts) {
 
   let holdTimer = null, held = null, listeners = null;
 
+  // ---- the pan: a finger drag is the two-finger scroll, and it is the SAME verb -----------------
+  //
+  // A wheel is a two-finger pan on a trackpad, and this file has always sent it as one.  A TOUCH
+  // SCREEN HAS NO WHEEL, and the host's stylesheet deliberately gives the browser only the
+  // HORIZONTAL axis (`touch-action: pan-x` on the file browser's rows) because the vertical axis
+  // is not a div to move — a column shows the slice the box sent, and reaching row 40 means asking
+  // for it.  So on a phone nothing produced the gesture at all and the lists would not scroll.
+  //
+  // The fix is not a new verb: it is the same `two-finger` the wheel sends, produced from a drag.
+  // Pixels are accumulated and spent a ROW at a time, because the wire's unit is a row delta and
+  // the server clamps against a row count — sending pixels would scroll 29x too far.  The row
+  // height is MEASURED off a real row rather than assumed, so a stylesheet change cannot silently
+  // desynchronize the two.
+  //
+  // It rides the POINTER events the tap and hold already use, not touch events: one code path for
+  // mouse, pen and finger, and no second set of listeners to keep in step.  A drag past the slop
+  // CANCELS the hold, which is what keeps a scroll from also being a long-press.
+  const SLOP = 8;                       // px of travel that makes a press a drag, not a tap
+  let panId = null, panY = 0, panAcc = 0, panMoved = 0;
+
   function keyAt(ev) {
     const li = ev.target.closest ? ev.target.closest("li[data-key]") : null;
     return li ? li.dataset.key : null;
+  }
+
+  // One row, in pixels, read off the DOM.  Falls back to the host's own 29px row when there is
+  // nothing to measure yet (an empty list, or a panel that has not been laid out).
+  function rowPx() {
+    const li = rowsEl && rowsEl.querySelector ? rowsEl.querySelector("li") : null;
+    const h = li ? li.getBoundingClientRect().height : 0;
+    return h > 4 ? h : 29;
   }
 
   function attachGestures(root) {
     detachGestures();
     const onDown = (ev) => {
       held = keyAt(ev);
+      panId = ev.pointerId; panY = ev.clientY; panAcc = 0; panMoved = 0;
       if (!held) return;
       // press-hold is a TIMING discrimination and it is timed locally, on purpose: 100-300ms of
       // jittery link would make a hold read as a tap if the server tried to time it.
       holdTimer = setTimeout(() => { holdTimer = null; send({t: "gesture", g: "hold", key: held}); },
                              400);
     };
-    const onUp = () => {
+    const onMove = (ev) => {
+      if (panId == null || ev.pointerId !== panId) return;
+      const dy = ev.clientY - panY; panY = ev.clientY;
+      panMoved += Math.abs(dy);
+      if (panMoved > SLOP && holdTimer) {          // a drag is not a hold
+        clearTimeout(holdTimer); holdTimer = null; held = null;
+      }
+      panAcc += dy;
+      const px = rowPx();
+      while (Math.abs(panAcc) >= px) {
+        const d = panAcc > 0 ? 1 : -1;
+        panAcc -= d * px;
+        scroll = Math.max(0, scroll + d);
+        send({t: "gesture", g: "two-finger", dy: d});
+      }
+    };
+    const onUp = (ev) => {
+      if (panId != null && ev.pointerId === panId) panId = null;
       if (holdTimer) {
         clearTimeout(holdTimer); holdTimer = null;
         // A release inside the hold window is a tap.  A release AFTER it lands on whatever is under
@@ -605,6 +651,11 @@ function makeWarpClient(opts) {
         // and it needs no verb of its own because menu items are presentations you can tap.
         if (held) send({t: "gesture", g: "tap", key: held});
       }
+      held = null;
+    };
+    const onCancel = (ev) => {                     // the browser took the gesture (a native pan)
+      if (panId != null && ev.pointerId === panId) panId = null;
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
       held = null;
     };
     const onCtx = (ev) => {                                    // right-click is a hold
@@ -617,21 +668,25 @@ function makeWarpClient(opts) {
       send({t: "gesture", g: "two-finger", dy: dy});
     };
     root.addEventListener("pointerdown", onDown);
+    root.addEventListener("pointermove", onMove);
     root.addEventListener("pointerup", onUp);
+    root.addEventListener("pointercancel", onCancel);
     root.addEventListener("contextmenu", onCtx);
     root.addEventListener("wheel", onWheel, {passive: true});
-    listeners = {root, onDown, onUp, onCtx, onWheel};
+    listeners = {root, onDown, onMove, onUp, onCancel, onCtx, onWheel};
   }
 
   function detachGestures() {
     if (!listeners) return;
     const l = listeners; listeners = null;
     l.root.removeEventListener("pointerdown", l.onDown);
+    l.root.removeEventListener("pointermove", l.onMove);
     l.root.removeEventListener("pointerup", l.onUp);
+    l.root.removeEventListener("pointercancel", l.onCancel);
     l.root.removeEventListener("contextmenu", l.onCtx);
     l.root.removeEventListener("wheel", l.onWheel);
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
-    held = null;
+    held = null; panId = null;
   }
 
   return {

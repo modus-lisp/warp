@@ -1,4 +1,5 @@
-;;;; demo/serve-both.lisp — two apps, one link: the device manager and the file browser at once.
+;;;; demo/serve-both.lisp — three apps, one link: the device manager, the file browser, and the
+;;;; media player at once.
 ;;;;
 ;;;; This is the local stand-in for what the gateway does on stream 102, and it is deliberately the
 ;;;; SAME code: `serve-dom` takes a default projection and an :APPS alist, hands both to
@@ -8,7 +9,9 @@
 ;;;; WebSocket.
 ;;;;
 ;;;; The device manager is the DEFAULT app: no label on its messages, no label on its frames, and
-;;;; byte for byte the link it had before the file browser existed.  The file browser is `files`.
+;;;; byte for byte the link it had before the file browser existed.  The file browser is `files`;
+;;;; the media player is `media`, and it is the one that makes rule 9 pay — its picture band is an
+;;;; opaque node, so the caption travels and the pixels do not.
 ;;;;
 ;;;;   sbcl --load demo/serve-both.lisp [port] [root]
 ;;;;
@@ -20,6 +23,7 @@
   (let ((*standard-output* (make-broadcast-stream)))
     (asdf:load-system :warp-monitor)
     (asdf:load-system :warp-files/dom)
+    (asdf:load-system :warp-media/dom)
     (asdf:load-system :warp-dom/serve)))
 
 (defpackage #:warp-both-demo (:use #:cl)) (in-package #:warp-both-demo)
@@ -58,6 +62,11 @@ sees exactly what it has always seen."
 (defvar *browser* (warp-files:make-browser *root*))
 (defvar *files* (warp-files:browse-projection *browser*))
 
+;;; ---- app three: the media player -------------------------------------------------------------
+
+(defvar *library* (warp-media:make-library :root *root*))
+(defvar *media* (warp-media:library-projection *library*))
+
 ;;; ---- one server, one socket per browser, two consumers on each ------------------------------
 
 (defvar *port* (or (ignore-errors (parse-integer (second sb-ext:*posix-argv*))) 8788))
@@ -70,10 +79,16 @@ sees exactly what it has always seen."
                                          (list :projection *files*
                                                :view 'warp-files:files-view
                                                :attach #'warp-files-dom:attach-dom
+                                               :rows 40 :budget 100000))
+                                   (cons "media"
+                                         (list :projection *media*
+                                               :view 'warp-media:media-view
+                                               :attach #'warp-media-dom:attach-dom
                                                :rows 40 :budget 100000)))))
 
 (format t "~&warp :: dom consumer on http://127.0.0.1:~a/~%" *port*)
-(format t "~&warp :: apps — (default) device manager, `files` rooted at ~a~%" *root*)
+(format t "~&warp :: apps — (default) device manager, `files` rooted at ~a, `media` rooted at ~a~%"
+        *root* (warp-media:default-media-root))
 (finish-output)
 
 ;; the device-manager fixture moves, so its delta stream has something to say; the file browser's

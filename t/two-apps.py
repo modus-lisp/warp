@@ -77,9 +77,11 @@ def between(a, b, keep_markers=False):
     return src[i:j + len(b)] if keep_markers else src[i + len(a):j]
 
 FILES_CSS_BEGIN = "/* ==== BEGIN the file browser's stylesheet"
+MEDIA_CSS_BEGIN = "/* ==== BEGIN the media player's stylesheet"
 MENU_CSS_BEGIN = "/* ==== BEGIN the app menu's stylesheet"
 CSS = ("/* --- the warp panel:" + between("/* --- the warp panel:", FILES_CSS_BEGIN)
        + between(FILES_CSS_BEGIN, "/* ==== END the file browser's stylesheet", True)
+       + between(MEDIA_CSS_BEGIN, "/* ==== END the media player's stylesheet", True)
        + between(MENU_CSS_BEGIN, "/* ==== END the app menu's stylesheet", True))
 CLIENT = between("// ==== BEGIN warp/dom/client.js — VERBATIM, checked by warp/t/client-sync.py ====",
                  "// ==== END warp/dom/client.js ====")
@@ -92,10 +94,16 @@ WARP_WIRING = between("    // --- ▤ the device manager: warp, on a third data 
                       keep_markers=True)
 FILES_WIRING = between("    // ==== BEGIN the file browser — lifted by warp/t/two-apps.py",
                        "    // ==== END the file browser ", keep_markers=True)
+MEDIA_WIRING = between("    // ==== BEGIN the media player — lifted by warp/t/two-apps.py",
+                       "    // ==== END the media player ", keep_markers=True)
 
 SHIM = """
 const diagLog = []; window.diagLog = diagLog;
 const diag = (m) => diagLog.push(m);
+// payload.js's own "run this when the channel is open" helper, stubbed for the same reason as the
+// channels below: the lifted menu block calls it, and a stub that runs the callback on a macrotask
+// is exactly the guarantee the real one gives (see payload.js's onOpen).
+const onOpen = (c, fn) => { if (!c) return; c.addEventListener('open', fn); if (c.readyState === 'open') setTimeout(fn, 0); };
 const gGlyph = g => { const s = document.createElement('span'); s.className='gg'; s.textContent=g; return s; };
 const mkToggle = (glyph, right, label) => {
   const b = document.createElement('button');
@@ -176,6 +184,11 @@ const WSURL = {json.dumps("ws://127.0.0.1:" + str(PORT) + "/warp")};
 {MENU_WIRING}
 {WARP_WIRING}
 {FILES_WIRING}
+{MEDIA_WIRING}
+// payload.js's own restore, which lives OUTSIDE the lifted blocks: every app has registered, so
+// whatever the URL settled on is now the truth worth sending.  Without it the video gate stays
+// shut and the desktop is never asked to stop, which is a harness gap rather than a client bug.
+videoSettled = true; pushVideoState();
 window.T = {{
   // THE MENU IS THE ONLY WAY IN NOW, so the helpers go through it exactly as a thumb would: tap ⊞
   // until the list is up — one tap from the desktop, two if a panel is open, because the first one
@@ -214,10 +227,35 @@ window.T = {{
                       if (!e) return false; e.click(); return true; }},
   openWarp:  () => T.pick('devices'),
   openFiles: () => T.pick('files'),
+  openMedia: () => T.pick('media'),
   // every fixed round button the page put on the row, by what it says it is
   rowBtns: () => [...document.querySelectorAll('button.gbtn')].map(b => b.getAttribute('aria-label')),
   warpVisible:  () => getComputedStyle(document.getElementById('warpPanel')).display,
   filesVisible: () => getComputedStyle(document.getElementById('filesPanel')).display,
+  mediaVisible: () => getComputedStyle(document.getElementById('mediaPanel')).display,
+  mediaNote: () => document.getElementById('mediaNote').textContent,
+  // THE MEDIA PANEL'S ROWS, by type and by the cells the client painted.  The player is a FLAT
+  // list like the device manager, so this reads #mediaRows directly rather than through containers.
+  mediaRows: () => [...document.querySelectorAll('#mediaRows > li')].map(li => li.dataset.key),
+  // The client paints the TYPE as a class, not an attribute (see warp/dom/client.js PAINT): an
+  // entry row is .entry.<tag>, a control is .button.k-<kind>, a scrubber cell is .seg.s-<state>,
+  // and the picture is .opaque.  So the classes ARE the types, and this reads them.
+  mediaClasses: () => [...new Set([...document.querySelectorAll('#mediaRows > li')]
+                     .flatMap(li => [...li.classList]))].sort(),
+  mediaOpaque: () => [...document.querySelectorAll('#mediaRows .opaque')]
+                     .map(el => [el.querySelector('.cap').textContent,
+                                 el.querySelector('.dim').textContent]),
+  // THE CONTROLS, MEASURED.  A control is a glyph the client draws as an <svg class="icon">, and
+  // the client sets NO width or height on it -- the stylesheet must size it.  A stylesheet that
+  // forgets leaves every control present, tappable and 0x0, which is exactly the bug this reads
+  // for: the transport was four blank rows until the em-sizing rule was carried into the panel.
+  mediaControls: () => [...document.querySelectorAll('#mediaRows li.button')].map(li => {{
+    const r = li.getBoundingClientRect();
+    const s = li.querySelector('svg');
+    const sr = s ? s.getBoundingClientRect() : null;
+    return {{key: li.dataset.key, w: Math.round(r.width), h: Math.round(r.height),
+            iw: sr ? Math.round(sr.width) : 0, ih: sr ? Math.round(sr.height) : 0}};
+  }}),
   warpRows: () => [...document.querySelectorAll('#warpRows li')].map(li => li.dataset.key),
   // THE DEVICE MANAGER'S PANEL AS A STRING, with the client's own rows and hold-menu left out —
   // those are the server's and change with the fixture's clock.  What is left is the four elements
@@ -264,7 +302,31 @@ window.T = {{
   holdText: t => {{ for (const li of document.querySelectorAll('#filesRows li')) {{
                      const v = li.querySelector('.n, .v'); if (v && v.textContent === t) {{ files.hold(li.dataset.key); return li.dataset.key; }} }}
                     return null; }},
-  warp: () => warp, files: () => files
+  // The media panel's own tap, over #mediaRows: the player is a flat list, so the same gesture
+  // recognizer, a different container.
+  tapMedia: t => {{ for (const li of document.querySelectorAll('#mediaRows li')) {{
+                     const v = li.querySelector('.n, .v');
+                     if (v && v.textContent === t) {{
+                       li.dispatchEvent(new PointerEvent('pointerdown', {{bubbles: true}}));
+                       li.dispatchEvent(new PointerEvent('pointerup', {{bubbles: true}}));
+                       return li.dataset.key; }} }}
+                   return null; }},
+  // A FINGER DRAG down the rows, as the pointer events a thumb actually makes — so the client's
+  // own pan recognizer runs rather than a harness door.  A touch screen has no wheel, and the
+  // stylesheet gives the browser only the horizontal axis, so this is the ONLY thing that can
+  // produce a vertical scroll on a phone.  Returns the two-finger gestures it put on the wire.
+  dragRows: (dy) => {{ const li = document.querySelector('#filesRows li');
+    if (!li) return null;
+    const r = li.getBoundingClientRect(), x = r.left + 20, y0 = r.top + r.height / 2;
+    const ev = (t, y) => li.dispatchEvent(new PointerEvent(t,
+      {{bubbles: true, pointerId: 7, clientX: x, clientY: y}}));
+    const before = window.sent.length;
+    ev('pointerdown', y0);
+    for (let i = 1; i <= 6; i++) ev('pointermove', y0 + dy * i / 6);
+    ev('pointerup', y0 + dy);
+    return window.sent.slice(before).map(s => JSON.parse(s))
+             .filter(m => m.t === 'gesture' && m.g === 'two-finger'); }},
+  warp: () => warp, files: () => files, media: () => media
 }};
 </script>
 """
@@ -316,7 +378,7 @@ with sync_playwright() as pw:
     ok("one tap opens it", page.evaluate("T.openMenu()"))
     entries = page.evaluate("T.entries()")
     ok("with ONE ENTRY PER APP, each naming one known facet — no 'best available' anything",
-       [e[0] for e in entries] == ["devices", "files"], entries)
+       [e[0] for e in entries] == ["devices", "files", "media"], entries)
     # THE DESKTOP IS NOT IN THIS MENU, and that is the point of the menu.  It only opens FROM the
     # desktop -- the button puts any panel away first -- so an entry for it offers to take you
     # where you already are.  It belongs in the STRIP, where you are somewhere else.
@@ -401,6 +463,39 @@ with sync_playwright() as pw:
     ok("and the device manager's rows were not disturbed by any of it",
        page.evaluate("T.warpRows()") == dm_rows)
 
+    print("== a finger drag scrolls the list, because a phone has no wheel ==")
+    # THE BUG THIS READS FOR: the vertical axis of a list is not a div to move -- a column shows
+    # the slice the box sent, and reaching row 40 means asking for it -- so the stylesheet gives
+    # the browser only the horizontal axis (touch-action: pan-x) and the vertical scroll has to
+    # come from the client's own recognizer.  A wheel produced it; a finger did not, so on a phone
+    # the lists would not scroll at all.  A drag must produce the SAME two-finger verb, in ROWS.
+    page.evaluate("window.__smark = window.sent.length")
+    drag = page.evaluate("T.dragRows(90)")
+    ok("a finger drag down the rows produces two-finger gestures, not a tap",
+       drag and all(g["g"] == "two-finger" for g in drag) and len(drag) >= 1, drag)
+    ok("and they carry a ROW delta, not pixels — the wire's unit is a row",
+       drag and all(isinstance(g["dy"], int) and abs(g["dy"]) == 1 for g in drag), drag)
+    ok("and the drag did not also fire a tap or a hold",
+       not [m for m in page.evaluate("window.sent.slice(window.__smark)")
+            if json.loads(m).get("g") in ("tap", "hold")],
+       page.evaluate("window.sent.slice(window.__smark)"))
+    # A DRAG IS NOT A HOLD: the same press, held past the 400ms window but moved, must not open a
+    # menu.  This is the discrimination the pan shares with the tap, and it is why the pan rides
+    # the pointer events rather than a second set of touch listeners.
+    page.evaluate("window.__smark = window.sent.length")
+    page.evaluate("""(() => { const li = document.querySelector('#filesRows li');
+        const r = li.getBoundingClientRect(), x = r.left + 20, y = r.top + r.height / 2;
+        const ev = (t, yy) => li.dispatchEvent(new PointerEvent(t,
+          {bubbles: true, pointerId: 9, clientX: x, clientY: yy}));
+        ev('pointerdown', y); ev('pointermove', y + 40); })()""")
+    page.wait_for_timeout(600)                       # past the 400ms hold window
+    ok("a press that MOVED is not a hold, even held past the hold window",
+       not [m for m in page.evaluate("window.sent.slice(window.__smark)")
+            if json.loads(m).get("g") == "hold"],
+       page.evaluate("window.sent.slice(window.__smark)"))
+    page.evaluate("""(() => { const li = document.querySelector('#filesRows li');
+        li.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, pointerId: 9})); })()""")
+
     print("== drilling in: a second column, to the RIGHT of the first ==")
     page.evaluate("T.tapText('fix')")
     page.wait_for_function("T.cols().length === 2", timeout=15000)
@@ -463,6 +558,64 @@ with sync_playwright() as pw:
     ok("the delta that carried the preview carried NO pixels with it",
        pv and len(pv) < 400 and "data:" not in pv and "base64" not in pv,
        str(len(pv)) + " bytes: " + pv if pv else None)
+
+    print("== app three: the media player, on the same channel, reached through the same menu ==")
+    page.evaluate("T.openMedia()")
+    page.wait_for_function("T.mediaRows().length > 0", timeout=20000)
+    ok("its entry opens it, and the file browser was PUT AWAY — still one rich panel at a time",
+       page.evaluate("T.mediaVisible()") == "flex" and page.evaluate("T.filesVisible()") == "none",
+       (page.evaluate("T.filesVisible()"), page.evaluate("T.mediaVisible()")))
+    sent = [json.loads(s) for s in page.evaluate("sent")]
+    labelled = [m for m in sent if "a" in m]
+    ok("its messages carry the app label, and the device manager's still carry none",
+       any(m["a"] == "media" for m in labelled) and len(labelled) < len(sent),
+       (len(labelled), len(sent)))
+    # THE PLAYER IS A FLAT LIST, like the device manager and unlike the file browser: its bands
+    # arrive in running order in ONE container, "rows", because a browser lays them out itself.
+    ok("it is FLAT — the player's bands made no containers",
+       page.evaluate("document.querySelectorAll('#mediaRows .container').length") == 0)
+    types = page.evaluate("T.mediaClasses()")
+    ok("and every band is there: the transport, its controls, the scrubber, and the playlist",
+       {"button", "seg", "entry"} <= set(types), types)
+    # THE PICTURE IS RULE 9's OPAQUE NODE, and this surface cannot blit it.  Nothing is playing, so
+    # there is no picture band yet — but the moment a track with video plays, the caption arrives
+    # and the client draws a placeholder, exactly as the file browser's preview does.
+    ok("the picture band is absent while nothing is playing — a song has no picture",
+       "opaque" not in types, types)
+
+    # THE CONTROLS ARE VISIBLE, which is not the same as present.  The client writes
+    # <svg class="icon"> with no width or height, so a stylesheet that does not size it leaves
+    # four controls that are in the DOM, tappable, and 0x0 -- the transport read as blank rows
+    # until the em-sizing rule was carried into this panel.  Measured, not asserted by class.
+    ctl = page.evaluate("T.mediaControls()")
+    ok("the transport's four controls are drawn, and each is a real target",
+       len(ctl) == 4 and all(c["w"] > 20 and c["h"] > 20 for c in ctl), ctl)
+    ok("and each control's GLYPH is drawn — an icon the stylesheet forgot to size is 0x0",
+       all(c["iw"] > 0 and c["ih"] > 0 for c in ctl), ctl)
+    # THE STRIP, NOT A STACK.  The bands are siblings in one list, so the stylesheet has to make
+    # the controls share a row; without that each is a full-width block and the transport reads
+    # as four stacked rows.  Two controls on the same line is the whole of the claim.
+    tops = {c["key"]: c for c in ctl}
+    ok("the controls sit in a STRIP — they share a line rather than stacking",
+       len({c["h"] for c in ctl}) == 1 and
+       page.evaluate("""(()=>{const b=[...document.querySelectorAll('#mediaRows li.button')]
+           .map(li=>Math.round(li.getBoundingClientRect().top));
+           return new Set(b).size;})()""") <= 2,
+       [c["key"] for c in ctl])
+    # THE SCRUBBER IS A BAR, not 32 stacked rows: its segments share a line and each is narrow.
+    segs = page.evaluate("""[...document.querySelectorAll('#mediaRows li.seg')].map(li=>{
+        const r=li.getBoundingClientRect();
+        return [Math.round(r.left),Math.round(r.top),Math.round(r.width)];})""")
+    ok("the scrubber is a BAR — its segments share a line and none is full width",
+       len(segs) > 1 and len({s[1] for s in segs}) == 1 and all(s[2] < 200 for s in segs),
+       (len(segs), len({s[1] for s in segs}), max(s[2] for s in segs) if segs else None))
+    # AND THE PICTURE BAND IS ABSENT, because this player is AUDIO ONLY now: a song has no picture,
+    # so rule 9's opaque node is in the result-set and this consumer gives it no place.  The
+    # caption machinery is still exercised by the file browser's preview above.
+    ok("no picture band: this player is audio only, so a track has no opaque node",
+       "opaque" not in types, types)
+    ok("and the device manager's rows were not disturbed by any of it",
+       page.evaluate("T.warpRows()") == dm_rows)
 
     print("== a hold in one app does not open a menu in the other ==")
     page.evaluate("T.holdText('alpha.txt')")
@@ -564,7 +717,8 @@ with sync_playwright() as pw:
        x == 0 and w == 390 and y == 44 and h == 780 - 44, (x, y, w, h))
     ok("the switcher is up", page.evaluate("T.switchOn()"))
     ok("and it holds every app, the desktop among them, with the open one marked",
-       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", True], ["files", False]],
+       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", True],
+                                              ["files", False], ["media", False]],
        page.evaluate("T.switchEntries()"))
 
     # THE DESKTOP BEHIND IT IS OFF, and both halves are asserted because either alone is a bug that
@@ -620,7 +774,8 @@ with sync_playwright() as pw:
        and page.evaluate("T.warpVisible()") == "none"
        and page.evaluate("T.filesVisible()") == "flex")
     ok("and the strip now marks the file browser instead",
-       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", False], ["files", True]],
+       page.evaluate("T.switchEntries()") == [["desktop", False], ["devices", False],
+                                              ["files", True], ["media", False]],
        page.evaluate("T.switchEntries()"))
     ok("and the chip that says where you are is not the one scrolled off the end",
        page.evaluate("T.currentVisible()"))
@@ -677,7 +832,7 @@ with sync_playwright() as pw:
     page.evaluate("window.dropApp = 'files'")
     ok("both apps are offered to begin with, because nothing has been asked",
        page.evaluate("T.openMenu()")
-       and [e[2] for e in page.evaluate("T.entries()")] == [False, False],
+       and [e[2] for e in page.evaluate("T.entries()")] == [False, False, False],
        page.evaluate("T.entries()"))
     ok("the device manager answers", page.evaluate("T.openWarp()"))
     page.wait_for_function("T.warpRows().length > 0", timeout=15000)
@@ -697,7 +852,7 @@ with sync_playwright() as pw:
     ok("captioned with why, BEFORE the tap rather than after it",
        files_entry[3] == "not served by this box", entries)
     ok("it is still LISTED, though — a client that asked and heard nothing may not claim the app "
-       "was never there", [e[0] for e in entries] == ["devices", "files"], entries)
+       "was never there", [e[0] for e in entries] == ["devices", "files", "media"], entries)
     ok("picking it does nothing at all", page.evaluate("T.openFiles()") is False)
     ok("and the app that does answer is untouched",
        page.evaluate("T.openWarp()") and page.evaluate("T.warpRows()")[:2]

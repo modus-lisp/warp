@@ -35,3 +35,14 @@ blitted into its pane — the one place in the system that can see the pixels."
   :depends-on ("warp-media" "warp-glass" "glass/audio")
   :serial t
   :components ((:module "." :components ((:file "glass")))))
+
+;; The DOM encoding.  It receives the SAME projection and the same opaque picture node, cannot blit
+;; the frame, and is entitled to know what the region is anyway — the caption, the dimensions and
+;; the frame number, which is the whole of rule 9's "opaque nodes, and the caption that cannot be
+;; derived".  This is the facet the phone shows; the framebuffer is the facet the desktop shows.
+(defsystem "warp-media/dom"
+  :description "The player's bands as sibling lists in a browser: the picture as its caption and a
+placeholder, the transport and controls as buttons and a meter, the playlist as rows."
+  :depends-on ("warp-media" "warp-dom")
+  :serial t
+  :components ((:module "." :components ((:file "dom")))))

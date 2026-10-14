@@ -17,22 +17,30 @@
 ;;; ---- where the media is --------------------------------------------------------------------------
 
 (defparameter *extensions*
-  '("webm" "mkv" "mp4" "m4a" "mpg" "mpeg" "vob" "ts" "m2ts" "mp3" "opus" "ogg" "oga" "aac")
-  "What this player can open.  Named after the CONTAINERS rather than the codecs, so that a folder
-of photographs is not a playlist of errors — and because which codec is inside is not knowable from
-the name anyway.
+  '("mp3" "opus" "ogg" "oga" "m4a" "aac")
+  "What this player can open: AUDIO ONLY, and only the audio the engine can actually decode.
+Named after the CONTAINERS rather than the codecs, because which codec is inside is not knowable
+from the name anyway.
 
-WebM and Matroska are the same demuxer; `.mpg', `.vob', `.ts' and `.m2ts' are MPEG program and
-transport streams, which carry MPEG-1, MPEG-2 or H.264 video.  A file whose video this cannot decode
-is still listed rather than hidden: a person with a folder of them would rather hear one than be
-told the folder is empty.")
+This list used to carry the video containers too — WebM, Matroska, MP4, and the MPEG program and
+transport streams — and the picture band was the point of the app.  It is not any more.  A phone on
+a WebRTC link cannot afford a video stream beside the desktop's own, and the honest thing is to
+stop offering one: a folder of films is now a folder this player does not list, rather than a
+playlist of things that will stutter.  The picture band and rule 9's opaque node are still here and
+still correct — the desktop's framebuffer encoding still blits a frame — but nothing in this list
+has one, so the band stays empty.
+
+The list is exactly what %MEDIA-KIND opens, and no more: a name here that the engine cannot decode
+would be a row that fails on tap, which is worse than a row that is not there.  reed has FLAC, MP2
+and AC3 decoders that are not yet wired into the engine; when they are, their extensions belong
+here.")
 
 (defun default-media-root ()
-  "$GLASS_MEDIA, else the first of ~/Videos, ~/Music, HOME that exists."
+  "$GLASS_MEDIA, else the first of ~/Music, ~/Videos, HOME that exists."
   (let ((env (uiop:getenv "GLASS_MEDIA")))
     (or (and env (plusp (length env))
              (ignore-errors (truename (uiop:ensure-directory-pathname env))))
-        (loop for sub in '("Videos/" "Music/")
+        (loop for sub in '("Music/" "Videos/")
               for d = (merge-pathnames sub (user-homedir-pathname))
               when (probe-file d) do (return (truename d)))
         (user-homedir-pathname))))
@@ -64,9 +72,11 @@ told the folder is empty.")
    (lock :initform (bt:make-lock "warp-media-library") :reader %library-lock))
   (:documentation "A folder being looked at and the player its tracks play on."))
 
-(defun make-library (&key (root (default-media-root)) mixer player)
+(defun make-library (&key (root (default-media-root)) mixer (mixer-name "media") player)
   (let* ((r (truename (uiop:ensure-directory-pathname root)))
-         (lib (make-instance 'library :root r :folder r :player (or player (make-player :mixer mixer)))))
+         (lib (make-instance 'library :root r :folder r
+                             :player (or player (make-player :mixer mixer
+                                                             :mixer-name mixer-name)))))
     (setf (player-on-change (library-player lib))
           (lambda (p what)
             ;; auto-advance: the next track in the folder when this one ends

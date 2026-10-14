@@ -23,9 +23,9 @@
   (when (probe-file *root*)
     (uiop:delete-directory-tree *root* :validate (lambda (p) (uiop:subpathp p #p"/tmp/"))))
   (ensure-directories-exist (merge-pathnames "more/" *root*))
-  (dolist (v '("t5-av.webm" "t1-basic.webm"))
+  (dolist (v '("tone-sweep-440-880.mp3" "opus-ogg.ogg"))
     (uiop:copy-file (merge-pathnames v *vectors*) (merge-pathnames v *root*)))
-  (uiop:copy-file (merge-pathnames "t4-testsrc.webm" *vectors*) (merge-pathnames "more/t4.webm" *root*))
+  (uiop:copy-file (merge-pathnames "audio.m4a" *vectors*) (merge-pathnames "more/audio.m4a" *root*))
   (with-open-file (s (merge-pathnames "notes.txt" *root*) :direction :output :if-exists :supersede)
     (write-string "not media" s)))
 
@@ -78,52 +78,42 @@
       (notany (lambda (d) (eq (p-type (delta-presentation d)) 'warp-media:media-picture))
               (warp::take-record *rc*))))
 
-(format t "~&== play a WebM with sound: the audio clock paces the picture~%")
+(format t "~&== play an MP3: the audio clock, and no picture at all~%")
 (let* ((track (find-if (lambda (o) (and (typep o 'warp-media:media-row)
-                                        (equal (pathname-name (warp-media:row-path o)) "t5-av")))
+                                        (equal (pathname-name (warp-media:row-path o)) "tone-sweep-440-880")))
                        (projection-objects *proj*)))
        (r (invoke 'warp-media::play-track track :owner)))
   (ok "play-track answered" (eq (first r) :playing))
   ;; let the worker open the file and fill its queues
   (loop repeat 200 until (eq (warp-media:player-state *player*) :playing) do (sleep 0.02))
   (ok "state is :playing" (eq (warp-media:player-state *player*) :playing))
-  (ok "it knows it has video" (warp-media:player-has-video-p *player*))
-  (ok "duration is ~1 s" (let ((d (warp-media:player-duration *player*))) (and d (< 0.9 d 1.2))))
+  (ok "it knows it has NO video — this is an audio player now"
+      (not (warp-media:player-has-video-p *player*)))
+  (ok "duration is ~30 s" (let ((d (warp-media:player-duration *player*))) (and d (< 29 d 31))))
   (sleep 0.3)
   (tick *rc*)
   (diag "after open")
-  (ok "frame 1 is showing before any audio has been taken (timestamp 0)"
-      (let ((f (warp-media:player-frame *player*))) (and f (= (warp-media:vf-no f) 1))))
+  (ok "no frame is showing — there is nothing to show"
+      (null (warp-media:player-frame *player*)))
   ;; half a second of pretend audio: 25 mixer ticks
   (let ((got (pull-audio 25)))
     (ok "the thunk handed out 25 audio frames" (= got 25)))
   (sleep 0.1)
   (tick *rc*)
   (diag "after 25 pulls")
-  (let ((f (warp-media:player-frame *player*)))
-    (ok "at t=0.5 s the picture is frame 8 (15 fps)" (and f (<= 7 (warp-media:vf-no f) 9)))
-    (ok "position reads 0.5 s" (< 0.45 (warp-media:player-position *player*) 0.55)))
-  (ok "the picture node's fingerprint carries the frame number and no pixels"
-      (let* ((rec (warp::take-record *rc*))
-             (pd (find 'warp-media:media-picture rec :key (lambda (d) (p-type (delta-presentation d))))))
-        (declare (ignorable pd))
-        ;; the recording consumer has no picture-place: the opaque node is invisible to it by
-        ;; design, so what we check is PRESENT directly
-        (let ((cells (present (first (projection-objects *proj*)) 'warp-media:media-picture 'warp-media:media-view)))
-          (and (integerp (third cells)) (eq (fourth cells) :opaque)
-               (notany (lambda (c) (typep c '(simple-array (unsigned-byte 8) (*)))) cells)))))
+  (ok "position reads 0.5 s" (< 0.45 (warp-media:player-position *player*) 0.55))
+  (ok "the picture node's fingerprint is a caption and a hole, and carries no pixels"
+      (let ((cells (present (first (projection-objects *proj*)) 'warp-media:media-picture 'warp-media:media-view)))
+        (and (stringp (first cells)) (eq (fourth cells) :opaque)
+             (notany (lambda (c) (typep c '(simple-array (unsigned-byte 8) (*)))) cells))))
   (ok "pause is NIL from the thunk" (progn (warp-media:pause *player*) (zerop (pull-audio 5))))
   (ok "position does not move while paused" (< 0.45 (warp-media:player-position *player*) 0.55))
   (warp-media:resume *player*)
-  ;; drain the rest of the second
-  (let ((n 0)) (loop repeat 60 do (incf n (pull-audio 1)) (sleep 0.005))
-    (ok "the rest of the audio came out (~25 more frames)" (<= 20 n 30)))
-  (loop repeat 100 until (member (warp-media:player-state *player*) '(:ended :stopped))
-        do (pull-audio 1) (sleep 0.02))
-  (diag "after drain")
-  ;; t5-av is the LAST track of the folder, so auto-advance has nowhere to go
-  (ok "the track ended and the player stopped at the end of the folder"
-      (member (warp-media:player-state *player*) '(:ended :stopped))))
+  ;; drain a second of the thirty
+  (let ((n 0)) (loop repeat 300 until (>= n 25) do (incf n (pull-audio 1)) (sleep 0.005))
+    (ok "the rest of the second came out (~25 more frames)" (<= 20 n 30)))
+  (warp-media:stop *player*)
+  (ok "stop leaves the player stopped" (eq (warp-media:player-state *player*) :stopped)))
 
 (defun save-png (fb path)
   (let* ((w (glass:fb-width fb)) (h (glass:fb-height fb)) (px (glass:fb-pixels fb))
@@ -155,21 +145,14 @@
     (sleep 0.3)
     (funcall dirty-p)
     (let ((pic (find 'warp-media:media-picture (consumer-visible *c*) :key #'p-type)))
-      (ok "the picture band is laid out now that the track has video" (and pic (p-extent pic)))
-      (when pic
-        (let* ((e (p-extent pic)) (px (glass:fb-pixels *fb*)) (w (glass:fb-width *fb*)))
-          (ok "picture band is 512 x 288 at the top" (equal e (list 0 0 512 288)))
-          (ok "there are non-black pixels in the picture band"
-              (loop for y from (+ (extent-y e) 40) below (- (+ (extent-y e) (extent-h e)) 40) by 16
-                    thereis (loop for x from 8 below w by 16
-                                  thereis (/= 0 (aref px (+ (* y w) x))))))))
-      ;; advance the clock; only the picture (and once a second the clock) should repaint
+      (ok "an audio track lays out NO picture band" (or (null pic) (null (p-extent pic))))
+      ;; advance the clock; only the clock text and the cells it crossed should repaint
       (pull-audio 10) (sleep 0.1)
       (let ((before (consumer-landed *c*)))
         (funcall dirty-p)
         (let ((n (- (consumer-landed *c*) before)))
-          ;; the picture, the clock text once a second, and the seek cells the position crossed
-          (ok (format nil "advancing the clock repaints the picture, the cells it crossed, little else (~d deltas)" n) (<= 1 n 12))))))
+          ;; the clock text once a second, and the seek cells the position crossed
+          (ok (format nil "advancing the clock repaints the cells it crossed, little else (~d deltas)" n) (<= 1 n 12))))))
   (save-png *fb* "/tmp/warp-media-shot.png")
   (format t "~&  wrote /tmp/warp-media-shot.png~%"))
 

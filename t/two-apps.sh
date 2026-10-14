@@ -21,6 +21,9 @@ printf 'bbbbbbbb\n' > "$root/beta.txt"
 printf 'cccc\n' > "$root/fix/gamma.txt"
 printf 'dddddddd\n' > "$root/fix/delta.txt"
 printf 'eeee\n' > "$root/fix/pics/note.txt"
+# A real video, so the media player has a picture band to show.  t5-av.webm is the smallest
+# cassette vector with both audio and video (8.6 KB), and it is what the media tests use.
+cp /home/claude/cassette/vectors/t5-av.webm "$root/clip.webm"
 
 port=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 echo "== serving two apps on 127.0.0.1:$port, files rooted at $root =="

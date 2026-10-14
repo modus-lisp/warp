@@ -96,9 +96,9 @@
    (lock :initform (bt:make-lock "warp-media-player") :reader %lock))
   (:documentation "Shared playback state — the query's argument.  One per window group, not per seat."))
 
-(defun make-player (&key mixer)
+(defun make-player (&key mixer (mixer-name "media"))
   (let ((p (make-instance 'player)))
-    (when mixer (attach-mixer p mixer))
+    (when mixer (attach-mixer p mixer :name mixer-name))
     p))
 
 (defmacro with-player ((p) &body body) `(bt:with-lock-held ((%lock ,p)) ,@body))
