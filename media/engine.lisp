@@ -65,12 +65,38 @@
    VF-Y/-U/-V, tightly packed) -- for a framebuffer that is Y'CbCr itself (glass :I420), so a
    picture goes from the decoder to the screen without ever being RGB.")
 
+;;; COOPERATIVE MODE: a machine with no threads.  The decoder is a GENERATOR either way (each call
+;;; demuxes and decodes the next item: a video frame, or a run of audio frames, and posts what it
+;;; learns -- live, a note, the base -- to the track's LINK).  With threads one worker drains it
+;;; into the link and blocks while the player has a full queue's worth untaken; with *COOPERATIVE*
+;;; nothing is spawned and PLAYER-FRAME-CURRENT, at UI rate, runs PLAYER-PUMP, which decodes until
+;;; the link is full or *PUMP-BUDGET* seconds have gone.  A bare-metal board (kiln zero) without
+;;; threads sets it; everything else leaves it NIL.
+(defvar *cooperative* nil "True on a machine without threads: decode on the caller's thread.")
+(defparameter *pump-budget* 0.03d0 "Seconds one PLAYER-PUMP may spend decoding.")
+
+;;; THE FRAME POOL: frames the UI's thread makes, which the decoder fills.  On modus's bare-metal
+;;; threads a picture made in shared memory (%SHARED-OCTETS) comes out of the runtime lock's arena,
+;;; which only a stop-the-world collection gives back -- 4 MB on a Pi Zero, six RGB pictures.  With
+;;; *FRAME-POOL* (and :I420 pictures) the UI's thread makes *FRAME-POOL-SIZE* frames of up to
+;;; *FRAME-POOL-MAX* when a track opens; the decoder copies each picture's planes into a free one
+;;; (bytes into the UI's arrays: numbers, not pointers) and the presenter gives frames back.
+(defvar *frame-pool* nil "True: decoded pictures are copied into frames the UI's thread made.")
+(defparameter *frame-pool-size* 8 "Frames in the pool: the video queue's six, the shown, a spare.")
+(defparameter *frame-pool-max* '(640 368) "The largest picture (w h) a pool frame holds.")
+
+;;; *READ-ON-UI*: the UI's thread reads a WebM/MP4 file and hands the decoder its bytes, rather than
+;;; a path -- on modus's bare metal the filesystem's caches are the UI thread's objects, which the
+;;; decoder may not fill.
+(defvar *read-on-ui* nil "True: the UI's thread reads the file; the decoder opens bytes.")
+
 (defstruct (video-frame (:conc-name vf-))
   (w 0 :type fixnum) (h 0 :type fixnum)
   (rgb nil)                                     ; packed 8-bit RGB, w*h*3 octets, or NIL
   (y nil) (u nil) (v nil)                       ; :I420 planes, w*h and ceil(w/2)*ceil(h/2)
   (no 0 :type fixnum)                           ; monotonically increasing; the fingerprint's part
-  (timestamp 0d0 :type double-float))           ; seconds
+  (timestamp 0d0 :type double-float)            ; seconds
+  (pool -1 :type fixnum))                       ; its index in the player's frame pool, or -1
 
 ;;; ---- what crosses threads ------------------------------------------------------------------------
 
@@ -86,7 +112,8 @@
   (inbox '())                                   ; messages, newest first
   (cancelled nil)                               ; set by the player: superseded, stop
   (audio-posted 0) (audio-taken 0)              ; posted by the worker, taken by the player
-  (video-posted 0) (video-taken 0))
+  (video-posted 0) (video-taken 0)
+  (pool nil) (pool-free nil))                   ; the player's frame pool, when *FRAME-POOL*
 
 (defun %make-link () (%share (make-link)))
 
@@ -131,6 +158,11 @@
    (video-q :initform '() :accessor %video-q) (video-n :initform 0 :accessor %video-n)
    (worker :initform nil :accessor %worker)
    (link :initform nil :accessor %link :documentation "The current track's LINK, or NIL.")
+   (coop :initform nil :accessor %coop
+         :documentation "Cooperative mode: (link generator pending-item), or NIL.")
+   ;; *FRAME-POOL*: frames made by the UI's thread, and a fixnum per frame: 1 free, 0 taken
+   (pool :initform nil :accessor %pool)
+   (pool-free :initform nil :accessor %pool-free)
    (pending-ended :initform nil :accessor %pending-ended
                   :documentation "A track ended under the lock; tell ON-CHANGE once it is released.")
    (worker-done :initform t :accessor %worker-done)
@@ -253,6 +285,56 @@
 
 ;;; ---- the presenter: which frame is current ---------------------------------------------------------
 
+;;; ---- the frame pool (*FRAME-POOL*) -------------------------------------------------------------
+
+(defun %pool-ensure (p)
+  "Make P's pool, on the calling thread (the UI's), if it has none.  The pool or NIL."
+  (when (and *frame-pool* (eq *frame-format* :i420) (null (%pool p)))
+    (destructuring-bind (mw mh) *frame-pool-max*
+      (let* ((n *frame-pool-size*)
+             (pool (make-array n))
+             (free (make-array n :initial-element 1))
+             (cw (ceiling mw 2)) (ch (ceiling mh 2)))
+        (dotimes (i n)
+          (setf (svref pool i)
+                (make-video-frame :w 0 :h 0 :pool i
+                                  :y (make-array (* mw mh) :element-type '(unsigned-byte 8))
+                                  :u (make-array (* cw ch) :element-type '(unsigned-byte 8))
+                                  :v (make-array (* cw ch) :element-type '(unsigned-byte 8)))))
+        (setf (%pool-free p) free (%pool p) pool))))
+  (%pool p))
+
+(defun %pool-release (p f)
+  "F is neither queued nor shown any more: back to the pool (a no-op for a frame not from it)."
+  (when (and f (>= (vf-pool f) 0) (%pool-free p))
+    (setf (svref (%pool-free p) (vf-pool f)) 1)))
+
+(defun %pool-release-all (p)
+  (let ((free (%pool-free p)))
+    (when free (dotimes (i (length free)) (setf (svref free i) 1)))))
+
+(defun %pool-take (lk w h)
+  "A free pool frame big enough for W x H, taken; waits while all are in use (cooperative mode
+   never does: the presenter runs between pumps).  NIL when there is no pool, the picture does
+   not fit, every frame is taken in cooperative mode, or the track is superseded."
+  (let ((pool (lk-pool lk)) (free (lk-pool-free lk)))
+    (when (and pool (<= w (first *frame-pool-max*)) (<= h (second *frame-pool-max*)))
+      (loop
+        (unless (%live-p lk) (return nil))
+        (let ((i (position 1 free)))
+          (when i
+            (setf (svref free i) 0)
+            (return (svref pool i))))
+        (when *cooperative* (return nil))
+        (sleep 0.005)))))
+
+(defun %fill-plane (out src off stride w h)
+  "Rows W wide of a plane at OFF, STRIDE apart, into OUT, tightly."
+  (dotimes (r h out)
+    (replace out src :start1 (* r w) :start2 (+ off (* r stride)) :end2 (+ off (* r stride) w))))
+
+;;; ---- the presenter: which frame is current ---------------------------------------------------------
+
 (defun %present-locked (p)
   "Promote every queued frame whose time has come; the last of them is what is shown."
   (%drain-locked p)
@@ -262,9 +344,11 @@
     (when (and (null (player-frame p)) (%video-q p))
       (setf shown (pop (%video-q p))) (decf (%video-n p)) (incf taken))
     (loop while (and (%video-q p) (<= (vf-timestamp (first (%video-q p))) clock))
-          do (setf shown (pop (%video-q p))) (decf (%video-n p)) (incf taken))
+          do (when shown (%pool-release p shown))        ; passed over: never shown
+             (setf shown (pop (%video-q p))) (decf (%video-n p)) (incf taken))
     (let ((lk (%link p))) (when (and lk (plusp taken)) (incf (lk-video-taken lk) taken)))
     (when shown
+      (unless (eq shown (player-frame p)) (%pool-release p (player-frame p)))
       (setf (player-frame p) shown (player-frame-no p) (vf-no shown)))
     ;; a silent film ends when its last frame has been shown
     (when (and (%worker-done p) (null (%video-q p)) (not (%has-audio p))
@@ -274,7 +358,9 @@
     shown))
 
 (defun player-frame-current (p)
-  "The frame to show now — promotes queued frames first.  Called from the query, at UI rate."
+  "The frame to show now — promotes queued frames first.  Called from the query, at UI rate.
+   In cooperative mode this is also where the decoder runs (PLAYER-PUMP)."
+  (when *cooperative* (player-pump p))
   (prog1 (with-player (p) (%present-locked p) (player-frame p))
     (%fire-pending p)))
 
@@ -314,6 +400,8 @@
 
 (defun %reset-locked (p)
   (incf (%generation p))
+  (%pool-release-all p)
+  (setf (%coop p) nil)
   (let ((lk (%link p))) (when lk (setf (lk-cancelled lk) t (%link p) nil)))
   (setf (%audio-q p) '() (%audio-n p) 0 (%video-q p) '() (%video-n p) 0
         (%emitted p) 0 (%base p) 0d0 (%wall-start p) nil (%wall-accum p) 0d0
@@ -392,17 +480,28 @@
             (player-frame p) nil
             (%base p) (%share (float from 1d0))
             (%worker-done p) nil)
-      (let ((lk (%make-link))
-            ;; keyed by namestring: the worker is handed one (a string crosses threads; a
-            ;; caller may pass a pathname)
-            (pcm (let ((c (%pcm-cache p))) (and c (equal (car c) (namestring path)) (cdr c))))
-            (idx (let ((c (%mp3-index p))) (and c (equal (car c) (namestring path)) (cdr c)))))
-        (setf (%link p) lk
-              ;; The caches go to the worker as arguments.  On modus they are left behind: a
-              ;; whole song's PCM would be copied to get there, and a re-decode is cheaper.
-              (%worker p) (%spawn-decoder lk kind (namestring path) from (and (player-mixer p) t)
-                                          #+modus nil #-modus pcm
-                                          #+modus nil #-modus idx))))
+      (let* ((lk (%make-link))
+             ;; keyed by namestring: the worker is handed one (a string crosses threads; a
+             ;; caller may pass a pathname)
+             (name (namestring path))
+             (pcm (let ((c (%pcm-cache p))) (and c (equal (car c) name) (cdr c))))
+             (idx (let ((c (%mp3-index p))) (and c (equal (car c) name) (cdr c))))
+             ;; *READ-ON-UI*: the bytes, read here, on the UI's thread
+             (src (if (and *read-on-ui* (member kind '(:webm :mp4 :mpegsys)))
+                      (cassette::slurp-file path)
+                      name)))
+        (setf (%link p) lk)
+        (when (%pool-ensure p)
+          (setf (lk-pool lk) (%pool p) (lk-pool-free lk) (%pool-free p)))
+        (if *cooperative*
+            ;; opening the file -- demux headers, go live -- happens now, on this thread
+            (%coop-start p lk kind name from (and (player-mixer p) t) pcm idx src)
+            ;; The caches go to the worker as arguments.  On modus they are left behind: a
+            ;; whole song's PCM would be copied to get there, and a re-decode is cheaper.
+            (setf (%worker p) (%spawn-decoder lk kind name from (and (player-mixer p) t)
+                                              #+modus nil #-modus pcm
+                                              #+modus nil #-modus idx
+                                              src)))))
     (player-state p)))
 
 (defun play-index (p i)
@@ -510,16 +609,76 @@
           (:mp3-index (setf (%mp3-index p) (cons (second m) (third m))))
           (:done (setf (%worker-done p) t)))))))
 
-(defun %run-worker (lk kind path from has-mixer pcm idx)
+(defun %make-generator (lk kind path from has-mixer pcm idx &optional (src path))
+  "Open the track and go live; the thunk that yields the next item -- (:VIDEO . frame) or
+   (:AUDIO . mono-frames) -- or NIL when the track is done or superseded.  SRC is PATH, or the
+   file's bytes (*READ-ON-UI*)."
+  (ecase kind
+    ((:webm :mp4 :mpegsys) (%container-generator lk path from has-mixer pcm src))
+    ((:mp3 :opus :aac) (%audio-file-generator lk kind path from pcm idx))))
+
+(defun %run-worker (lk kind path from has-mixer pcm idx &optional (src path))
+  "The decode thread: drain the generator into the link, blocking while the player has a full
+   queue's worth untaken."
   ;; reed's decoder tables are built on first use; this thread gets its own (on modus a worker
   ;; may not fill the loading thread's).
   (handler-case
       (reed:with-thread-state ()
-        (ecase kind
-          ((:webm :mp4 :mpegsys) (%run-container lk path from has-mixer pcm))
-          ((:mp3 :opus :aac) (%run-audio-file lk kind path from pcm idx))))
+        (let ((next (%make-generator lk kind path from has-mixer pcm idx src)))
+          (loop for item = (funcall next)
+                while item
+                do (unless (if (eq (car item) :video)
+                               (%push-video lk (cdr item))
+                               (%push-audio lk (cdr item)))
+                     (return)))))
     (serious-condition (e) (%fail lk e)))
   (when (%live-p lk) (%post lk (list :done))))
+
+;;; ---- cooperative mode: the same generator, drained by the UI ----------------------------------
+
+(defun %coop-start (p lk kind path from has-mixer pcm idx src)
+  (handler-case
+      (let ((next (%make-generator lk kind path from has-mixer pcm idx src)))
+        (with-player (p) (when (eq (%link p) lk) (setf (%coop p) (list lk next nil)))))
+    (serious-condition (e) (%fail lk e) (%post lk (list :done)))))
+
+(defun %try-post (lk item)
+  "Post as much of ITEM as the player has room for, without waiting.  What is left, or NIL."
+  (cond ((not (%live-p lk)) nil)
+        ((eq (car item) :video)
+         (if (< (- (lk-video-posted lk) (lk-video-taken lk)) *video-queue-max*)
+             (progn (%post lk (list :video (cdr item))) (incf (lk-video-posted lk)) nil)
+             item))
+        (t
+         (let ((frames (cdr item)))
+           (loop while (and frames (< (- (lk-audio-posted lk) (lk-audio-taken lk)) *audio-queue-max*))
+                 do (%post lk (list :audio (%shared-s16 (pop frames))))
+                    (incf (lk-audio-posted lk)))
+           (and frames (cons :audio frames))))))
+
+(defun player-pump (p &optional (budget *pump-budget*))
+  "Cooperative mode: decode until the player's queues are full, the track is done, or BUDGET
+   seconds have passed.  T while there is more to decode."
+  (let ((c (%coop p)))
+    (when c
+      (destructuring-bind (lk next pending) c
+        (let ((deadline (+ (%now) budget)))
+          (handler-case
+              (loop
+                (cond ((not (%live-p lk)) (setf (%coop p) nil) (return))
+                      (pending
+                       (setf pending (%try-post lk pending))
+                       (when pending (return)))                     ; full: later
+                      (t
+                       (let ((item (funcall next)))
+                         (if item
+                             (setf pending item)
+                             (progn (%post lk (list :done)) (setf (%coop p) nil) (return))))))
+                (when (> (%now) deadline) (return)))
+            (serious-condition (e)
+              (%fail lk e) (%post lk (list :done)) (setf (%coop p) nil)))
+          (when (eq (%coop p) c) (setf (third c) pending))))))
+  (and (%coop p) t))
 
 ;;; ---- WebM: video and Opus, interleaved --------------------------------------------------------------
 
@@ -606,9 +765,28 @@
     (dotimes (r h out)
       (replace out src :start1 (* r w) :start2 (+ off (* r stride)) :end2 (+ off (* r stride) w)))))
 
-(defun %picture->frame (pic no)
+(defun %picture->frame (pic no &optional lk)
+  "PIC as a VIDEO-FRAME: copied into a frame of the player's pool when LK carries one (and it
+   fits), else a fresh frame in shared memory.  NIL when the pool has no free frame in cooperative
+   mode, or the track is superseded."
   (let* ((w (cassette:picture-width pic)) (h (cassette:picture-height pic))
-         (ts (float (or (cassette:picture-timestamp pic) 0d0) 1d0)))
+         (ts (float (or (cassette:picture-timestamp pic) 0d0) 1d0))
+         (pooled (and lk (eq *frame-format* :i420) (lk-pool lk) (%pool-take lk w h))))
+    (when pooled
+      ;; BYTES into the UI's frame; the one number that is not a fixnum goes shared
+      (let ((cw (ceiling w 2)) (ch (ceiling h 2))
+            (cs (cassette:picture-uv-stride pic)) (co (cassette:picture-uv-offset pic)))
+        (%fill-plane (vf-y pooled) (cassette:picture-y pic) (cassette:picture-y-offset pic)
+                     (cassette:picture-y-stride pic) w h)
+        (%fill-plane (vf-u pooled) (cassette:picture-u pic) co cs cw ch)
+        (%fill-plane (vf-v pooled) (cassette:picture-v pic) co cs cw ch)
+        (setf (vf-w pooled) w (vf-h pooled) h (vf-no pooled) no
+              (vf-timestamp pooled) (%share ts))
+        (return-from %picture->frame pooled)))
+    (when (and lk (lk-pool lk) (eq *frame-format* :i420)
+               (<= w (first *frame-pool-max*)) (<= h (second *frame-pool-max*)))
+      ;; the pool would have held it: no free frame (cooperative) or superseded -- skip it
+      (return-from %picture->frame nil))
     ;; Not %SHARE'd here: the frame travels in a message, and %POST shares the message.  Its
     ;; planes or pixels are %SHARED-OCTETS already, so the big part is never copied.
     (if (eq *frame-format* :i420)
@@ -641,9 +819,9 @@
     (unless any-frames-p (%post lk (list :no-video)))
     (%post lk (list :note (format nil "video stopped: ~a" e)))))
 
-(defun %run-container (lk path from has-mixer pcm)
-  "Play a WebM or an MP4: video through cassette (VP8 or H.264), audio through whichever decoder
-   the track needs.
+(defun %container-generator (lk path from has-mixer pcm &optional (src path))
+  "A WebM or an MP4 as a generator (%MAKE-GENERATOR): video through cassette (VP8 or H.264), audio
+   through whichever decoder the track needs.  SRC is PATH or the file's bytes.
 
    Written against cassette's PUBLIC api rather than its internals, which is what lets one
    function cover both containers and both video codecs: NEXT-VIDEO-FRAME already knows whether
@@ -653,7 +831,7 @@
    and paced against the picture here.  That is why the interleave is explicit: the worker has to
    keep sound ahead of vision, or the bounded video queue stalls the audio it is meant to stay in
    step with."
-  (let* ((wp (cassette:open-media path :audio has-mixer))
+  (let* ((wp (cassette:open-media src :audio has-mixer))
          (vt (cassette:player-video-track wp))
          (at (cassette:player-audio-track wp))
          (duration (cassette:player-duration wp))
@@ -684,42 +862,51 @@
     (when (%live-p lk) (%post lk (list :base start)))
     (%go-live lk :has-video (and vt t) :has-audio (or (and at t) (and aac t))
               :duration (or duration (and aac (/ (length aac) (float +rate+ 1d0)))))
-    (labels ((pump-audio-to (target)
-               (cond
-                 (aac
-                  (loop while (and (< (/ aac-pos (float +rate+ 1d0)) target)
-                                   (< aac-pos (length aac)))
-                        do (let ((end (min (length aac) (+ aac-pos +frame-samples+))))
-                             (unless (%push-audio lk (list (subseq aac aac-pos end)))
-                               (return-from pump-audio-to nil))
-                             (setf aac-pos end)))
-                  t)
-                 (at
-                  (loop
-                    (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
-                      (unless pcm (return t))
-                      (when (>= ts (- start 0.0105d0))
-                        (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
-                          (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
-                        (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
-                          (setf carry c)
-                          (unless (%push-audio lk frames) (return nil))))
-                      (when (> ts target) (return t)))))
-                 (t t))))
-      (loop
-        (unless (%live-p lk) (return))
-        (let ((pic (and vt (handler-case (cassette:next-video-frame wp)
-                             (serious-condition (e) (%video-gave-up lk e (plusp no))
-                               (setf vt nil) nil)))))
-          (cond
-            (pic
-             (let ((ts (or (cassette:picture-timestamp pic) 0d0)))
-               (unless (pump-audio-to (+ ts 1d0)) (return))
-               (when (>= ts (- start 0.017d0))
-                 (unless (%push-video lk (%picture->frame pic (incf no))) (return)))))
-            (t
-             (pump-audio-to most-positive-double-float)
-             (return))))))))
+    (let ((out '()) (tail nil) (finished nil))
+      (labels ((emit (item)
+                 (let ((cell (list item)))
+                   (if out (setf (cdr tail) cell) (setf out cell))
+                   (setf tail cell)))
+               (emit-audio (frames) (when frames (emit (cons :audio frames))))
+               (pump-audio-to (target)
+                 (cond
+                   (aac
+                    (loop while (and (< (/ aac-pos (float +rate+ 1d0)) target)
+                                     (< aac-pos (length aac)))
+                          do (let ((end (min (length aac) (+ aac-pos +frame-samples+))))
+                               (emit-audio (list (subseq aac aac-pos end)))
+                               (setf aac-pos end))))
+                   (at
+                    (loop
+                      (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
+                        (unless pcm (return))
+                        (when (>= ts (- start 0.0105d0))
+                          (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
+                            (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
+                          (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
+                            (setf carry c)
+                            (emit-audio frames)))
+                        (when (> ts target) (return)))))))
+               (step-once ()
+                 (let ((pic (and vt (handler-case (cassette:next-video-frame wp)
+                                      (serious-condition (e) (%video-gave-up lk e (plusp no))
+                                        (setf vt nil) nil)))))
+                   (cond
+                     (pic
+                      (let ((ts (or (cassette:picture-timestamp pic) 0d0)))
+                        ;; sound ahead of vision: the bounded video queue must not stall it
+                        (pump-audio-to (+ ts 1d0))
+                        (when (>= ts (- start 0.017d0))
+                          (let ((f (%picture->frame pic (incf no) lk)))
+                            (when f (emit (cons :video f)))))))
+                     (t
+                      (pump-audio-to most-positive-double-float)
+                      (setf finished t))))))
+        (lambda ()
+          (loop
+            (when out (return (pop out)))
+            (when (or finished (not (%live-p lk))) (return nil))
+            (step-once)))))))
 
 ;;; ---- MP3: an index, so a seek is arithmetic -------------------------------------------------------------
 ;;;
@@ -804,7 +991,7 @@
 
 ;;; ---- audio files: reed ----------------------------------------------------------------------------------
 
-(defun %run-audio-file (lk kind path from pcm idx)
+(defun %audio-file-generator (lk kind path from pcm idx)
   (ecase kind
     (:mp3
      (let* ((bytes (cassette::slurp-file path))
@@ -814,11 +1001,10 @@
             (off (if (plusp from) (%mp3-offset idx from) (mi-first idx)))
             (rp (reed:make-mp3-player bytes :rate +rate+ :frame-samples +frame-samples+ :start off)))
        (%go-live lk :has-video nil :has-audio t :duration (mi-duration idx))
-       (loop
-         (unless (%live-p lk) (return))
-         (let ((f (reed:player-next-frame rp)))
-           (when (null f) (return))
-           (unless (%push-audio lk (list (%as-s16 f))) (return))))))
+       (lambda ()
+         (when (%live-p lk)
+           (let ((f (reed:player-next-frame rp)))
+             (and f (cons :audio (list (%as-s16 f)))))))))
     ((:opus :aac)
      ;; whole-file decode, once per track: these are songs, and a seek into a song is an index
      (let* ((mono (or pcm
@@ -828,13 +1014,14 @@
                                  (:mp4 (%mp4-aac-mono path)))))
                         #-modus (%post lk (list :pcm-cache path m))
                         m)))
-            (n (length mono)))
+            (n (length mono))
+            (pos (min n (floor (* from +rate+)))))
        (%go-live lk :has-video nil :has-audio t :duration (/ n (float +rate+ 1d0)))
-       (let ((pos (min n (floor (* from +rate+)))))
-         (loop while (and (%live-p lk) (< pos n))
-               do (let ((end (min n (+ pos +frame-samples+))))
-                    (unless (%push-audio lk (list (subseq mono pos end))) (return))
-                    (setf pos end))))))))
+       (lambda ()
+         (when (and (%live-p lk) (< pos n))
+           (let ((end (min n (+ pos +frame-samples+))))
+             (prog1 (cons :audio (list (subseq mono pos end)))
+               (setf pos end)))))))))
 
 (defun %as-s16 (v)
   (if (typep v '(simple-array (signed-byte 16) (*)))

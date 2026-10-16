@@ -13,6 +13,8 @@
    #:attach-mixer #:detach-mixer #:player-source #:shutdown
    #:video-frame #:video-frame-p #:vf-w #:vf-h #:vf-rgb #:vf-no #:vf-timestamp
    #:*frame-format* #:vf-y #:vf-u #:vf-v
+   #:*cooperative* #:*pump-budget* #:player-pump
+   #:*frame-pool* #:*frame-pool-size* #:*frame-pool-max* #:*read-on-ui*
    ;; the library and the domain objects
    #:*media-root* #:*extensions* #:default-media-root #:playable-p #:folder-tracks #:folder-subdirs
    #:library #:make-library #:library-player #:library-folder #:library-root #:library-rows
