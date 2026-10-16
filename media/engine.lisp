@@ -135,13 +135,13 @@
 ;;; ---- the player ------------------------------------------------------------------------------------
 
 (defclass player ()
-  ((state :initform :stopped :accessor player-state
+  ((state :initform :stopped :accessor %player-state
           :documentation ":stopped :loading :playing :paused :ended :error")
-   (error :initform nil :accessor player-error)
+   (error :initform nil :accessor %player-error)
    (track :initform nil :accessor player-track :documentation "The pathname playing, or NIL.")
-   (title :initform nil :accessor player-title)
-   (duration :initform nil :accessor player-duration :documentation "Seconds, or NIL when unknown.")
-   (has-video :initform nil :accessor player-has-video-p)
+   (title :initform nil :accessor %player-title)
+   (duration :initform nil :accessor %player-duration :documentation "Seconds, or NIL when unknown.")
+   (has-video :initform nil :accessor %player-has-video-p)
    (has-audio :initform nil :accessor %has-audio)
    ;; the clock
    (emitted :initform 0 :accessor %emitted :documentation "Samples the mixer has taken since BASE.")
@@ -151,8 +151,8 @@
    (wall-accum :initform 0d0 :accessor %wall-accum
                :documentation "Seconds of wall-clock playing accumulated before the current run.")
    ;; what the presenter shows
-   (frame :initform nil :accessor player-frame)
-   (frame-no :initform 0 :accessor player-frame-no)
+   (frame :initform nil :accessor %player-frame)
+   (frame-no :initform 0 :accessor %player-frame-no)
    ;; the queues
    (audio-q :initform '() :accessor %audio-q) (audio-n :initform 0 :accessor %audio-n)
    (video-q :initform '() :accessor %video-q) (video-n :initform 0 :accessor %video-n)
@@ -190,6 +190,28 @@
     p))
 
 (defmacro with-player ((p) &body body) `(bt:with-recursive-lock-held ((%lock ,p)) ,@body))
+
+(defvar *draining* nil "True inside %DRAIN-LOCKED, so a slot read it makes does not drain again.")
+
+;;; Plain functions over the slots, not :BEFORE methods on the accessors: a reader with a method
+;;; combination costs ~10x a plain call on modus (measured: 921 vs 88 us per PLAYER-STATE under
+;;; QEMU), and the UI reads these many times a frame.  And the drain is skipped while the inbox is
+;;; empty (read without the lock: a message that lands mid-read is applied on the next one).
+(declaim (inline %drain-for-read))
+(defun %drain-for-read (p)
+  (let ((lk (%link p)))
+    (when (and lk (lk-inbox lk) (not *draining*))
+      (with-player (p) (%drain-locked p)))))
+
+(macrolet ((drains (&rest pairs)
+             `(progn
+                ,@(loop for (reader slot) on pairs by #'cddr
+                        collect `(defun ,reader (p) (%drain-for-read p) (,slot p))
+                        collect `(defun (setf ,reader) (v p) (setf (,slot p) v))))))
+  (drains player-state %player-state  player-error %player-error
+          player-duration %player-duration  player-has-video-p %player-has-video-p
+          player-title %player-title  player-frame %player-frame
+          player-frame-no %player-frame-no))
 
 ;;; ---- the clock ---------------------------------------------------------------------------------
 
@@ -367,12 +389,7 @@
 ;;; READING WHAT THE WORKER REPORTS IS UP TO DATE.  The worker's news reaches the player only
 ;;; when the inbox is drained, so each slot it can change drains first when read -- the API reads
 ;;; exactly as it did when the worker wrote the slots itself.
-(macrolet ((drains (&rest readers)
-             `(progn ,@(loop for r in readers
-                             collect `(defmethod ,r :before ((p player))
-                                        (with-player (p) (%drain-locked p)))))))
-  (drains player-state player-error player-duration player-has-video-p player-title
-          player-frame player-frame-no))
+
 
 (defun player-sync (p)
   "Apply what the worker has reported (state, duration, frames).  The thunk, the presenter and
@@ -578,7 +595,6 @@
 (defun %fail (lk e)
   (when (%live-p lk) (%post lk (list :error (princ-to-string e)))))
 
-(defvar *draining* nil "True inside %DRAIN-LOCKED, so a slot read it makes does not drain again.")
 
 (defun %drain-locked (p)
   "Apply every message the current track's worker has posted.  The player's lock is held."
