@@ -469,7 +469,10 @@
           ;; which is MPEG-1, MPEG-2 or H.264 depending on the decade the file is from
           ((member type '("mpg" "mpeg" "vob" "ts" "m2ts") :test #'string=) :mpegsys)
           ((string= type "mp3") :mp3)
-          ((member type '("opus" "ogg" "oga") :test #'string=) :opus)
+          ;; Ogg (Opus, Vorbis) through cassette's demuxer, a packet at a time like a WebM's sound,
+          ;; not reed's whole-file decode: a song then starts at once and costs a packet's work
+          ;; per turn -- which is what lets it play from the UI's own thread (*COOPERATIVE*)
+          ((member type '("opus" "ogg" "oga") :test #'string=) :ogg)
           ;; MP4 and M4A go through CASSETTE's demuxer and then reed's AAC decoder, rather than
           ;; reed's own whole-file MP4 reader.  The reason is a real failure: reed's reader looks
           ;; for an esds under the first track it finds, so on a file with VIDEO first it finds an
@@ -504,7 +507,7 @@
              (pcm (let ((c (%pcm-cache p))) (and c (equal (car c) name) (cdr c))))
              (idx (let ((c (%mp3-index p))) (and c (equal (car c) name) (cdr c))))
              ;; *READ-ON-UI*: the bytes, read here, on the UI's thread
-             (src (if (and *read-on-ui* (member kind '(:webm :mp4 :mpegsys)))
+             (src (if (and *read-on-ui* (member kind '(:webm :mp4 :mpegsys :ogg)))
                       (cassette::slurp-file path)
                       name)))
         (setf (%link p) lk)
@@ -630,7 +633,7 @@
    (:AUDIO . mono-frames) -- or NIL when the track is done or superseded.  SRC is PATH, or the
    file's bytes (*READ-ON-UI*)."
   (ecase kind
-    ((:webm :mp4 :mpegsys) (%container-generator lk path from has-mixer pcm src))
+    ((:webm :mp4 :mpegsys :ogg) (%container-generator lk path from has-mixer pcm src))
     ((:mp3 :opus :aac) (%audio-file-generator lk kind path from pcm idx))))
 
 (defun %run-worker (lk kind path from has-mixer pcm idx &optional (src path))
@@ -850,8 +853,11 @@
   (let* ((wp (cassette:open-media src :audio has-mixer))
          (vt (cassette:player-video-track wp))
          (at (cassette:player-audio-track wp))
-         (duration (cassette:player-duration wp))
-         (landed (if (plusp from) (or (cassette:seek-media wp from) 0d0) 0d0))
+         ;; cassette answers these for WebM and MP4; an Ogg it parsed has neither (its duration
+         ;; and seek read the WebM's fields), so there: no duration, and a seek decodes forward
+         ;; from the start, dropping what is before FROM (below)
+         (duration (ignore-errors (cassette:player-duration wp)))
+         (landed (if (plusp from) (or (ignore-errors (cassette:seek-media wp from)) 0d0) 0d0))
          (start (max (float from 1d0) landed))
          ;; an MP4's AAC track: cassette demuxes it, reed decodes it, cached per track
          (aac (when (and (null at) has-mixer
@@ -884,6 +890,17 @@
                    (if out (setf (cdr tail) cell) (setf out cell))
                    (setf tail cell)))
                (emit-audio (frames) (when frames (emit (cons :audio frames))))
+               (audio-packet ()
+                 ;; the next audio packet's frames emitted; its timestamp, or NIL at the end
+                 (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
+                   (when pcm
+                     (when (>= ts (- start 0.0105d0))
+                       (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
+                         (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
+                       (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
+                         (setf carry c)
+                         (emit-audio frames)))
+                     ts)))
                (pump-audio-to (target)
                  (cond
                    (aac
@@ -893,16 +910,8 @@
                                (emit-audio (list (subseq aac aac-pos end)))
                                (setf aac-pos end))))
                    (at
-                    (loop
-                      (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
-                        (unless pcm (return))
-                        (when (>= ts (- start 0.0105d0))
-                          (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
-                            (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
-                          (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
-                            (setf carry c)
-                            (emit-audio frames)))
-                        (when (> ts target) (return)))))))
+                    (loop (let ((ts (audio-packet)))
+                            (when (or (null ts) (> ts target)) (return)))))))
                (step-once ()
                  (let ((pic (and vt (handler-case (cassette:next-video-frame wp)
                                       (serious-condition (e) (%video-gave-up lk e (plusp no))
@@ -915,6 +924,11 @@
                         (when (>= ts (- start 0.017d0))
                           (let ((f (%picture->frame pic (incf no) lk)))
                             (when f (emit (cons :video f)))))))
+                     ;; no picture (none left, or none at all): the sound ONE PACKET A STEP, so
+                     ;; the generator hands back 20 ms at a time instead of decoding the rest
+                     ;; of the file before it returns -- a song is mostly this branch
+                     ((and at (null aac))
+                      (unless (audio-packet) (setf finished t)))
                      (t
                       (pump-audio-to most-positive-double-float)
                       (setf finished t))))))
