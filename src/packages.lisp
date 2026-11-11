@@ -22,7 +22,7 @@
    #:define-presentation-key #:presentation-key
    #:+grid+ #:snap #:snap-extent #:rect-p #:extent-x #:extent-y #:extent-w #:extent-h
    ;; the delta stream
-   #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent
+   #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent #:delta-from
    #:delta-stream #:make-delta-stream #:ds-generation #:ds-pending-count
    #:emit #:snapshot
    ;; what a delta COSTS, and what MOVING looks like, are the encoding's: a budget is denominated in
