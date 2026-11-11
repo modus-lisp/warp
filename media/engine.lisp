@@ -87,6 +87,8 @@
    (index :initform -1 :accessor player-index)
    (on-change :initform nil :accessor player-on-change
               :documentation "Called with the player whenever a track starts or ends, for the UI.")
+   (ended-pending :initform nil :accessor %ended-pending
+                  :documentation "The track ended; the UI's next query delivers :ENDED to ON-CHANGE.")
    ;; what the current track decoded to, kept so a seek is a lookup, not a second decode
    (pcm-cache :initform nil :accessor %pcm-cache :documentation "(path . mono s16 48k vector), or NIL.")
    (mp3-index :initform nil :accessor %mp3-index :documentation "(path . MP3-INDEX), or NIL.")
@@ -210,22 +212,33 @@
     shown))
 
 (defun player-frame-current (p)
-  "The frame to show now — promotes queued frames first.  Called from the query, at UI rate."
-  (with-player (p) (%present-locked p) (player-frame p)))
+  "The frame to show now — promotes queued frames first.  Called from the query, at UI rate, so it
+   is also where a track's end reaches ON-CHANGE (see %FINISH-LOCKED)."
+  (let ((ended nil) (frame nil))
+    (with-player (p)
+      (%present-locked p)
+      (setf frame (player-frame p) ended (%ended-pending p) (%ended-pending p) nil))
+    (when ended
+      (let ((cb (player-on-change p)))
+        (when cb (ignore-errors (funcall cb p :ended)))))
+    frame))
 
 ;;; ---- state changes -----------------------------------------------------------------------------------
 
 (defun %finish-locked (p)
-  (setf (player-state p) :ended)
-  (%wall-hold p)
-  (let ((cb (player-on-change p)))
-    (when cb (bt:make-thread (lambda () (ignore-errors (funcall cb p :ended))) :name "warp-media-ended"))))
+  ;; ON-CHANGE hears of the end at the UI's next query (PLAYER-FRAME-CURRENT), on the UI's own thread,
+  ;; rather than on a thread of its own: the callback's usual answer is the next track, whose decoder
+  ;; is a new thread, and on modus a thread may not hand a closure it made to a new thread (its
+  ;; objects are its own) -- auto-advance failed there, and the player sat :LOADING.  The end is
+  ;; found under the lock, often on the mixer's thread, so the callback cannot run here.
+  (setf (player-state p) :ended (%ended-pending p) t)
+  (%wall-hold p))
 
 (defun %reset-locked (p)
   (incf (%generation p))
   (setf (%audio-q p) '() (%audio-n p) 0 (%video-q p) '() (%video-n p) 0
         (%emitted p) 0 (%base p) 0d0 (%wall-start p) nil (%wall-accum p) 0d0
-        (player-error p) nil))
+        (player-error p) nil (%ended-pending p) nil))
 
 (defun stop (p)
   "Stop, forget the track, keep the playlist."
