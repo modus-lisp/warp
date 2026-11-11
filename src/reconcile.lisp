@@ -22,7 +22,9 @@
   key
   presentation    ; nil for :gone
   extent          ; for :gone, the extent to repair
-  (dx 0) (dy 0))  ; for :moved
+  (dx 0) (dy 0)   ; for :moved
+  (from nil))     ; for :changed, the extent the consumer holds it at when that is not EXTENT: a row that
+                  ; moved AND changed (one whose neighbour above went away) leaves that place to repair
 
 (defstruct (delta-stream (:conc-name ds-) (:constructor %make-delta-stream))
   (delivered (make-hash-table :test 'equal))   ; key -> presentation, as the consumer holds it
@@ -88,7 +90,8 @@ be asked in the right encoding; NIL takes the pixel default."
                ((and same-look (equal (p-extent old) (p-extent new))) nil)   ; nothing owed
                (t
                 (push (%make-delta :kind :changed :key key :presentation new
-                                   :extent (p-extent new))
+                                   :extent (p-extent new)
+                                   :from (unless (equal (p-extent old) (p-extent new)) (p-extent old)))
                       out))))))))
     ;; anything delivered that is no longer present
     (maphash (lambda (key old)
