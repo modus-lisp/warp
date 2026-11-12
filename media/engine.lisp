@@ -361,6 +361,29 @@
 
 ;;; ---- the worker: demux, decode, queue ---------------------------------------------------------------
 
+;;; *WORKER-STATS*: when true, the worker says once a second where its time went -- decoding video,
+;;; converting it, decoding audio, and blocked on a full audio or video queue (in ms) -- and how many
+;;; pictures it made.  A diagnostic: a host turns it on (vessel: KILN_AUDIO_STATS).
+(defparameter *worker-stats* nil)
+(defvar *ws* nil "This worker's counters (bound per worker thread).")
+(defmacro %timed (key &body body)
+  `(if *ws*
+       (let ((t0 (get-internal-real-time)))
+         (multiple-value-prog1 (progn ,@body)
+           (incf (getf *ws* ,key) (- (get-internal-real-time) t0))))
+       (progn ,@body)))
+(defun %ws-tick (n)
+  (when *ws*
+    (when (>= (- (get-internal-real-time) (getf *ws* :t0)) internal-time-units-per-second)
+      (let ((ms (/ internal-time-units-per-second 1000)))
+        (format t "~&warp-media: worker ~D pictures; ms video ~D, rgb ~D, audio ~D, blocked audio ~D, blocked video ~D~%"
+                (- n (getf *ws* :n0))
+                (floor (getf *ws* :video) ms) (floor (getf *ws* :rgb) ms) (floor (getf *ws* :audio) ms)
+                (floor (getf *ws* :wait-audio) ms) (floor (getf *ws* :wait-video) ms)))
+      (finish-output)
+      (setf *ws* (list :t0 (get-internal-real-time) :start (getf *ws* :start) :n0 n
+                       :video 0 :rgb 0 :audio 0 :wait-audio 0 :wait-video 0)))))
+
 (defun %live-p (p gen) (and (= gen (%generation p))))
 
 (defun %push-audio (p gen frames)
@@ -550,6 +573,7 @@
          (aac-pos (if aac (min (length aac) (floor (* start +rate+))) 0))
          (carry (make-array 0 :element-type '(signed-byte 16)))
          (rs nil)                         ; the audio's rate -> +RATE+, made on first packet
+         (audio-to -1d0)                  ; the timestamp of the last audio packet decoded
          (no 0))
     (declare (type fixnum aac-pos no))
     ;; a video track the container refused outright — a codec we do not decode, or parameter sets
@@ -561,6 +585,10 @@
     (with-player (p) (when (%live-p p gen) (setf (%base p) (%share start))))
     (%go-live p gen :has-video (and vt t) :has-audio (or (and at t) (and aac t))
               :duration (or duration (and aac (/ (length aac) (float +rate+ 1d0)))))
+    ;; bound, not set: on modus a worker's objects may not be stored into a global
+    (let ((*ws* (and *worker-stats*
+                     (list :t0 (get-internal-real-time) :start (get-internal-real-time) :n0 0
+                           :video 0 :rgb 0 :audio 0 :wait-audio 0 :wait-video 0))))
     (labels ((pump-audio-to (target)
                (cond
                  (aac
@@ -572,20 +600,28 @@
                              (setf aac-pos end)))
                   t)
                  (at
+                  ;; ALREADY THERE: no packet.  The loop below reads a packet before it looks at
+                  ;; the time, so it decoded at least one more on every call -- once per picture.
+                  ;; Opus's 20 ms packets hid it; FLAC's 96 ms ones pulled 96 ms of sound through
+                  ;; for every 33 ms picture, the audio queue filled, and the worker was held to one
+                  ;; packet per picture: 10 frames a second with sound, 30 without.
+                  (when (> audio-to target) (return-from pump-audio-to t))
                   (loop
-                    (multiple-value-bind (pcm ts) (cassette:next-audio-frame wp)
+                    (multiple-value-bind (pcm ts) (%timed :audio (cassette:next-audio-frame wp))
                       (unless pcm (return t))
+                      (setf audio-to ts)
                       (when (>= ts (- start 0.0105d0))
                         (when (and (null rs) (/= (reed:pcm-sample-rate pcm) +rate+))
                           (setf rs (%make-rate-converter (reed:pcm-sample-rate pcm) +rate+)))
                         (multiple-value-bind (frames c) (%pcm->mono-frames pcm carry rs)
                           (setf carry c)
-                          (unless (%push-audio p gen frames) (return nil))))
+                          (unless (%timed :wait-audio (%push-audio p gen frames)) (return nil))))
                       (when (> ts target) (return t)))))
                  (t t))))
       (loop
         (unless (%live-p p gen) (return))
-        (let ((pic (and vt (handler-case (cassette:next-video-frame wp)
+        (%ws-tick no)
+        (let ((pic (and vt (handler-case (%timed :video (cassette:next-video-frame wp))
                              (serious-condition (e) (%video-gave-up p gen e (plusp no))
                                (setf vt nil) nil)))))
           (cond
@@ -593,10 +629,12 @@
              (let ((ts (or (cassette:picture-timestamp pic) 0d0)))
                (unless (pump-audio-to (+ ts 1d0)) (return))
                (when (>= ts (- start 0.017d0))
-                 (unless (%push-video p gen (%picture->frame pic (incf no))) (return)))))
+                 (unless (%timed :wait-video
+                           (%push-video p gen (%timed :rgb (%picture->frame pic (incf no)))))
+                   (return)))))
             (t
              (pump-audio-to most-positive-double-float)
-             (return))))))))
+             (return)))))))))
 
 ;;; ---- MP3: an index, so a seek is arithmetic -------------------------------------------------------------
 ;;;
