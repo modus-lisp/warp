@@ -874,6 +874,7 @@
          (aac-pos (if aac (min (length aac) (floor (* start +rate+))) 0))
          (carry (make-array 0 :element-type '(signed-byte 16)))
          (rs nil)                         ; the audio's rate -> +RATE+, made on first packet
+         (audio-to -1d0)                  ; the timestamp of the last audio packet decoded
          (no 0))
     (declare (type fixnum aac-pos no))
     ;; a video track the container refused outright — a codec we do not decode, or parameter sets
@@ -910,8 +911,15 @@
                                (emit-audio (list (subseq aac aac-pos end)))
                                (setf aac-pos end))))
                    (at
-                    (loop (let ((ts (audio-packet)))
-                            (when (or (null ts) (> ts target)) (return)))))))
+                    ;; only while the sound is behind TARGET.  The loop reads a packet before it
+                    ;; looks at the time, so without this it decoded one more on every call -- once
+                    ;; per picture.  Opus's 20 ms packets hid it; FLAC's 96 ms ones pulled 96 ms of
+                    ;; sound through for every 33 ms picture and held a film with sound to 10 frames
+                    ;; a second (measured on modus-threads, on an iPhone).
+                    (unless (> audio-to target)
+                      (loop (let ((ts (audio-packet)))
+                              (when ts (setf audio-to ts))
+                              (when (or (null ts) (> ts target)) (return))))))))
                (step-once ()
                  (let ((pic (and vt (handler-case (cassette:next-video-frame wp)
                                       (serious-condition (e) (%video-gave-up lk e (plusp no))
