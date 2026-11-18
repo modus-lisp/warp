@@ -17,7 +17,10 @@
 (defun ok (n p) (format t "~&  ~:[FAIL~;ok  ~] ~a~%" p n) (unless p (incf *fails*)))
 
 (defparameter *root* #p"/tmp/warp-media-fixture/")
-(defparameter *vectors* (merge-pathnames "cassette/vectors/" (user-homedir-pathname)))
+(defparameter *vectors*                 ; cassette's samples, wherever the checkout is
+  (or (find-if #'probe-file (list (merge-pathnames "modus-lisp/cassette/vectors/" (user-homedir-pathname))
+                                  (merge-pathnames "cassette/vectors/" (user-homedir-pathname))))
+      (merge-pathnames "cassette/vectors/" (user-homedir-pathname))))
 
 (defun build-fixture ()
   (when (probe-file *root*)
@@ -155,6 +158,23 @@
           (ok (format nil "advancing the clock repaints the cells it crossed, little else (~d deltas)" n) (<= 1 n 12))))))
   (save-png *fb* "/tmp/warp-media-shot.png")
   (format t "~&  wrote /tmp/warp-media-shot.png~%"))
+
+;;; never above the root: up stops there, and no folder outside it opens -- by path or by a link
+(let* ((root (truename *root*)) (out (merge-pathnames "link-out/" *root*)))
+  (warp-media:library-open *lib* root)
+  (warp-media:library-up *lib*)
+  (ok "up at the root stays at the root" (equal (warp-media:library-root *lib*) (warp-media::library-folder *lib*)))
+  (warp-media:library-open *lib* #p"/dev/")
+  (ok "a folder above the root does not open" (equal root (warp-media::library-folder *lib*)))
+  (ignore-errors (sb-posix:symlink "/tmp/" (string-right-trim "/" (namestring out))))
+  (when (probe-file out)
+    (warp-media:library-open *lib* out)
+    (ok "nor does a link inside the root that points out of it" (equal root (warp-media::library-folder *lib*)))
+    (ignore-errors (delete-file (string-right-trim "/" (namestring out)))))
+  (warp-media:library-open *lib* (merge-pathnames "more/" *root*))
+  (ok "a folder inside it still opens" (search "more" (namestring (warp-media::library-folder *lib*))))
+  (warp-media:library-up *lib*)
+  (ok "and up from it comes back to the root" (equal root (warp-media::library-folder *lib*))))
 
 (warp-media:shutdown *player*)
 (format t "~&~a~%" (if (zerop *fails*) "MEDIA OK" (format nil "MEDIA: ~d FAILED" *fails*)))

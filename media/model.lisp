@@ -95,20 +95,32 @@ here.")
               (%listing-for lib) folder))
       (values (car (%listing lib)) (cdr (%listing lib))))))
 
+(defun library-within-root-p (lib dir)
+  "Is DIR (a resolved directory) the library's root or inside it?  Compared RESOLVED, so a link
+inside the root that points out of it is outside."
+  (let ((root (namestring (library-root lib))) (d (namestring dir)))
+    (and (<= (length root) (length d)) (string= root d :end2 (length root)))))
+
 (defun library-open (lib dir)
-  "Navigate: DIR becomes the folder, and its tracks become the player's queue."
-  (bt:with-lock-held ((%library-lock lib))
-    (setf (library-folder lib) (truename (uiop:ensure-directory-pathname dir))
-          (%listing lib) nil))
+  "Navigate: DIR becomes the folder, and its tracks become the player's queue.  NEVER ABOVE THE
+ROOT: the root is what this library was given to play, and the rest of the filesystem is not a
+music collection (/dev/null is not a track) -- a DIR outside it leaves the folder where it is."
+  (let ((to (ignore-errors (truename (uiop:ensure-directory-pathname dir)))))
+    (unless (and to (library-within-root-p lib to))
+      (return-from library-open (library-folder lib)))
+    (bt:with-lock-held ((%library-lock lib))
+      (setf (library-folder lib) to
+            (%listing lib) nil)))
   (let ((p (library-player lib)))
     (setf (player-queue p) (folder-tracks (library-folder lib))
           (player-index p) (or (and (player-track p) (position (player-track p) (player-queue p) :test #'equal)) -1)))
   (library-folder lib))
 
 (defun library-up (lib)
+  "The parent folder -- but not past the root, where up is where you already are."
   (let* ((f (library-folder lib))
          (parent (uiop:pathname-parent-directory-pathname f)))
-    (if (and parent (not (equal parent f)) (probe-file parent))
+    (if (and parent (not (equal f (library-root lib))) (not (equal parent f)) (probe-file parent))
         (library-open lib parent)
         f)))
 
