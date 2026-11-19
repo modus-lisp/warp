@@ -5,7 +5,7 @@
   (:local-nicknames (#:bt #:bordeaux-threads))
   (:export
    ;; presentations
-   #:command-values #:command-current #:command-prompt #:cmd-prompt
+   #:command-values #:command-current #:command-prompt #:cmd-prompt #:command-secret-p #:consumer-ask-text
    #:define-widget #:widget-of #:widget-cells #:widget-layout
    ;; icons: path data, shared by every encoding.  A glyph cell may be a keyword naming one.
    #:define-icon #:icon #:icon-name #:icon-path #:icon-mode #:icon-fallback #:icon-names

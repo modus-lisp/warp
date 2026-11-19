@@ -67,6 +67,12 @@ the fingerprints are this consumer's own — derived under its view, at its scro
           :documentation "The projection epoch this consumer has already been handed.")
    ;; who is asking
    (invoker :initarg :invoker :initform :allowlist :accessor consumer-invoker)
+   ;; HOW THIS CONSUMER ASKS FOR TEXT, when its encoding cannot carry it (a framebuffer): a function
+   ;; of (&key label current secret done) that shows the host's own text input -- the phone's
+   ;; keyboard, a secure field for a SECRET -- and calls DONE with the string when the person
+   ;; commits it (never, if they cancel).  NIL: the encoding collects text itself (a browser), or
+   ;; there is no keyboard and a prompt item only closes the menu.
+   (ask-text :initarg :ask-text :initform nil :accessor consumer-ask-text)
    ;; rule 7 view state, per consumer per view
    (selected :initform nil :accessor consumer-selected)
    (menu :initform nil :accessor consumer-menu)
