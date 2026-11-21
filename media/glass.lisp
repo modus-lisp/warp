@@ -41,8 +41,12 @@
 
 (defun %picture-h (c)
   "16:9 of the window's width, in whole macroblocks: +PICTURE-H+ at the 512-pixel width the
-   window was drawn for, and no black bars in a narrower one (a phone's 393 points)."
-  (* 16 (max 1 (round (* (viewport-width c) 9) (* 16 16)))))
+   window was drawn for, and no black bars in a narrower one (a phone's 393 points).  A window
+   WIDER THAN IT IS TALL with a picture -- a turned phone -- is THEATER: the picture is the whole
+   window (letterboxed), and the transport, seek bar and list lie below it, out of view."
+  (if (and (m:has-picture-p c) (> (viewport-width c) (viewport-height c)))
+      (viewport-height c)
+      (* 16 (max 1 (round (* (viewport-width c) 9) (* 16 16))))))
 
 (defmethod m:picture-height ((c media-fb-consumer)) (%picture-h c))
 
