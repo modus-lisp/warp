@@ -130,27 +130,30 @@ warp's and is not repeated here."
 ;;; ---- the encoding: deltas become framebuffer writes -------------------------
 
 (defmethod apply-deltas ((c fb-consumer) deltas)
-  "Paint exactly what the stream emitted, and nothing else."
+  "Paint exactly what the stream emitted, and nothing else.  EVERY VACATED PLACE IS CLEARED FIRST --
+   what went, where a moved row came from, where a row that moved and changed was -- and only then is
+   anything painted: cleared one delta at a time, a place could be wiped after another row had moved
+   into it."
   (let ((fb (consumer-fb c)) (view (consumer-view c)))
     (glass:with-fb-locked (fb)
       (dolist (d deltas)
-        (ecase (warp:delta-kind d)
-          ((:appeared :changed)
-           (paint fb (warp:delta-presentation d) view)
-           (incf (consumer-landed c)))
+        (case (warp:delta-kind d)
           (:moved
-           ;; No blit yet: repaint at the new extent and clear where it came from.  The :moved KIND
+           ;; No blit yet: clear where it came from, repaint at the new extent below.  The :moved KIND
            ;; is still the right thing to carry — it is what a CopyRect or a motion vector will use
            ;; once the encoder can see a translation (DESIGN.md rule 2).
-           (let* ((p (warp:delta-presentation d)) (e (warp:p-extent p)))
+           (let ((e (warp:p-extent (warp:delta-presentation d))))
              (clear-extent fb (list (- (warp::extent-x e) (warp:delta-dx d))
                                     (- (warp::extent-y e) (warp:delta-dy d))
-                                    (warp::extent-w e) (warp::extent-h e)))
-             (paint fb p view)
-             (incf (consumer-landed c))))
-          (:gone
-           (clear-extent fb (warp:delta-extent d))
-           (incf (consumer-landed c))))))))
+                                    (warp::extent-w e) (warp::extent-h e)))))
+          (:changed (when (warp:delta-from d) (clear-extent fb (warp:delta-from d))))
+          (:gone (clear-extent fb (warp:delta-extent d)))))
+      (dolist (d deltas)
+        (ecase (warp:delta-kind d)
+          ((:appeared :changed :moved)
+           (paint fb (warp:delta-presentation d) view)
+           (incf (consumer-landed c)))
+          (:gone (incf (consumer-landed c))))))))
 
 ;;; ---- menu geometry ----------------------------------------------------------
 ;;; The menu MODEL is warp's (rules 5 and 6, menu.lisp): what a menu is, what is on it, and what

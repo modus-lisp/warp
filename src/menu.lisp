@@ -184,9 +184,17 @@ knows what its coordinates mean."
               (run-command c (mi-command it) (mi-target it) :value (mi-value it))
               (close-menu c))
              ;; A PROMPT ITEM IS NOT INVOKED BY THE TAP.  The tap means "ask me", and the client
-             ;; answers with a `cmd' message carrying the string it collected.  Tapping it here
-             ;; only closes the menu -- ON-GESTURE has no keyboard and must not pretend to.
-             (:prompt (close-menu c))
+             ;; answers with a `cmd' message carrying the string it collected.  ON-GESTURE has no
+             ;; keyboard and must not pretend to: a consumer whose HOST has one (ASK-TEXT) is asked
+             ;; for the text, and the command runs when -- if -- it comes back.
+             (:prompt
+              (let ((ask (consumer-ask-text c)) (cmd (mi-command it)) (target (mi-target it)))
+                (when ask
+                  (funcall ask :label (let ((p (command-prompt cmd))) (if (stringp p) p (cmd-label cmd)))
+                               :current (command-current cmd target)
+                               :secret (command-secret-p cmd)
+                               :done (lambda (text) (run-command c cmd target :value text)))))
+              (close-menu c))
              (:confirm
               (run-command c (mi-command it) (mi-target it) :confirmed t)
               (close-menu c))))))

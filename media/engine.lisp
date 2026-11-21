@@ -126,10 +126,20 @@
   (bt:with-lock-held ((lk-lock lk))
     (prog1 (reverse (lk-inbox lk)) (setf (lk-inbox lk) nil))))
 
+;;; A DECODER'S HEAP IS SMALL ON PURPOSE.  It allocates and collects constantly, and on a phone whose
+;;; world gives page workers 64 MB regions a 64 MB decoder region hung at its first collection; 16 MB
+;;; plays.  Where modus lays regions out by size (SB-THREAD:MAKE-THREAD :HEAP-BYTES), ask for 16 MB;
+;;; an older modus has no such argument, so it is passed only where it exists.
+(defparameter *decoder-heap-bytes* (* 16 1024 1024))
+(defun %decoder-heap-args ()
+  #+modus (and (find-symbol "*%THREAD-HEAP-WANT*" "MODUS-INT") (list :heap-bytes *decoder-heap-bytes*))
+  #-modus nil)
+
 (defun %spawn-decoder (&rest args)
   "Start a worker running %RUN-WORKER on ARGS.  A global function and its arguments, not a
    closure: on modus a closure cannot be handed to another thread, the arguments are copied."
-  #+modus (sb-thread:make-thread #'%run-worker :arguments args :name "warp-media-decode")
+  #+modus (apply #'sb-thread:make-thread #'%run-worker :arguments args :name "warp-media-decode"
+                 (%decoder-heap-args))
   #-modus (bt:make-thread (lambda () (apply #'%run-worker args)) :name "warp-media-decode"))
 
 ;;; ---- the player ------------------------------------------------------------------------------------

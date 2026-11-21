@@ -49,6 +49,10 @@
   ;; range, no intermediate string.  That is EDITING, it needs a continuous channel, and it is
   ;; the same boundary drawn for continuous manipulation in DESIGN.md.
   (prompt nil)
+  ;; SECRET: what the prompt collects is not to be shown -- a key, a password.  A client asks for
+  ;; it the way its platform asks for one (a secure field), and a control showing the value shows
+  ;; only that one is set.
+  (secret nil)
   ;; CURRENT lets a control show what is set now: (object) -> the value, compared with EQUAL
   ;; against the car of a VALUES pair.  Optional; without it a picker still works and simply
   ;; cannot mark which option is live.
@@ -58,7 +62,7 @@
 (defvar *defaults* (make-hash-table :test 'equal))       ; (type . view) -> command name
 
 (defmacro define-command ((name &key arg-type (cost :local) destructive confirm label
-                                     values current prompt)
+                                     values current prompt secret)
                           (object invoker &optional value) &body body)
   "Declare a command against a presentation type.  BODY is the handler; AUTHORIZE is attached
 separately with DEFINE-COMMAND-AUTHORIZATION so the predicate can live next to the policy it
@@ -84,6 +88,7 @@ possible value -- MEASURE-SUM, MEASURE-COUNT -- which does not survive a paramet
                          :values-fn ,values
                          :current-fn ,current
                          :prompt ,prompt
+                         :secret ,secret
                          :handler (lambda (,object ,invoker
                                            ,@(when value (list value)))
                                     (declare (ignorable ,object ,invoker
@@ -157,6 +162,10 @@ so a surface that offers too much cannot grant anything."
 (defun command-prompt (c)
   "What to ask, when C takes free text: a string, T, or NIL when it takes none."
   (cmd-prompt c))
+
+(defun command-secret-p (c)
+  "Whether what C's prompt collects is a secret: asked for in a secure field, never shown."
+  (cmd-secret c))
 
 (defun command-current (c object)
   "The value currently set on OBJECT, or NIL.  Compared EQUAL against a choice's car."

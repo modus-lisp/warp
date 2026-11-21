@@ -5,7 +5,7 @@
   (:local-nicknames (#:bt #:bordeaux-threads))
   (:export
    ;; presentations
-   #:command-values #:command-current #:command-prompt #:cmd-prompt
+   #:command-values #:command-current #:command-prompt #:cmd-prompt #:command-secret-p #:consumer-ask-text
    #:define-widget #:widget-of #:widget-cells #:widget-layout
    ;; icons: path data, shared by every encoding.  A glyph cell may be a keyword naming one.
    #:define-icon #:icon #:icon-name #:icon-path #:icon-mode #:icon-fallback #:icon-names
@@ -22,7 +22,7 @@
    #:define-presentation-key #:presentation-key
    #:+grid+ #:snap #:snap-extent #:rect-p #:extent-x #:extent-y #:extent-w #:extent-h
    ;; the delta stream
-   #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent
+   #:delta #:delta-kind #:delta-key #:delta-presentation #:delta-dx #:delta-dy #:delta-extent #:delta-from
    #:delta-stream #:make-delta-stream #:ds-generation #:ds-pending-count
    #:emit #:snapshot
    ;; what a delta COSTS, and what MOVING looks like, are the encoding's: a budget is denominated in
