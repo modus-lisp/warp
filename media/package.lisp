@@ -18,7 +18,7 @@
    ;; the library and the domain objects
    #:*media-root* #:*extensions* #:default-media-root #:playable-p #:folder-tracks #:folder-subdirs
    #:library #:make-library #:library-player #:library-folder #:library-root #:library-rows
-   #:library-projection #:library-open #:library-up
+   #:library-projection #:library-open #:library-up #:library-places
    #:media-row #:row-kind #:row-path #:row-library #:row-index
    #:transport #:transport-library #:media-button #:button-kind #:button-library
    #:seek-cell #:cell-index #:cell-count #:cell-library #:+seek-cells+

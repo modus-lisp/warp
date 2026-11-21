@@ -66,6 +66,9 @@ here.")
   ((root :initarg :root :reader library-root)
    (folder :initarg :folder :accessor library-folder :documentation "The open directory — the query's argument.")
    (player :initarg :player :reader library-player)
+   (places :initarg :places :initform nil :accessor library-places
+           :documentation "Other folders offered at the root, as (label . directory): a person's Music, Movies,
+   a folder they chose.  Opening one leaves the root, and from there UP reaches any folder.")
    (listing :initform nil :accessor %listing)
    (listing-at :initform 0 :accessor %listing-at)
    (listing-for :initform nil :accessor %listing-for)
@@ -117,6 +120,8 @@ here.")
 (defclass media-row ()
   ((kind :initarg :kind :reader row-kind :documentation ":head :up :dir :track")
    (path :initarg :path :reader row-path)
+   (label :initarg :label :initform nil :reader row-label
+          :documentation "A place's name (a :dir row offered at the root), or NIL: the folder's own name.")
    (index :initarg :index :reader row-index :documentation "Position in the folder's track list, or NIL.")
    (library :initarg :library :reader row-library)))
 
@@ -151,7 +156,7 @@ ordinary presentation — the protocol carries no coordinates and does not need 
 ;;; ---- rule 1: keys ---------------------------------------------------------------------------------------
 
 (define-presentation-key media-head (r) (cons :head (namestring (row-path r))))
-(define-presentation-key media-dir (r) (cons :dir (namestring (row-path r))))
+(define-presentation-key media-dir (r) (list :dir (namestring (row-path r)) (row-label r)))
 (define-presentation-key media-track (r) (cons :track (namestring (row-path r))))
 (define-presentation-key media-transport (o) (declare (ignore o)) :transport)
 (define-presentation-key media-control (b) (cons :control (button-kind b)))
@@ -199,7 +204,16 @@ ordinary presentation — the protocol carries no coordinates and does not need 
             (if (eq (row-kind r) :up) :up :head)))))
 
 (defmethod present ((r media-row) (type (eql 'media-dir)) (view (eql 'media-view)))
-  (list (car (last (pathname-directory (row-path r)))) "" :dir))
+  (if (row-label r)
+      (list (row-label r) (%home-relative (row-path r)) :place)
+      (list (car (last (pathname-directory (row-path r)))) "" :dir)))
+
+(defun %home-relative (dir)
+  "DIR's path, with the home directory as ~."
+  (let ((home (namestring (user-homedir-pathname))) (path (namestring dir)))
+    (if (and (>= (length path) (length home)) (string= home path :end2 (length home)))
+        (string-right-trim "/" (concatenate 'string "~/" (subseq path (length home))))
+        (string-right-trim "/" path))))
 
 (defmethod present ((r media-row) (type (eql 'media-track)) (view (eql 'media-view)))
   (let* ((p (library-player (row-library r)))
@@ -335,6 +349,10 @@ ordinary presentation — the protocol carries no coordinates and does not need 
        (loop for i below +seek-cells+ collect (make-instance 'seek-cell :index i :library lib))
        (list (make-instance 'media-row :kind (if (equal folder (library-root lib)) :head :up)
                                        :path folder :index nil :library lib))
+       ;; THE PLACES, at the root: the person's other folders, one tap away
+       (when (equal folder (library-root lib))
+         (loop for (label . dir) in (library-places lib)
+               collect (make-instance 'media-row :kind :dir :path dir :label label :index nil :library lib)))
        (loop for d in dirs collect (make-instance 'media-row :kind :dir :path d :index nil :library lib))
        (loop for tr in tracks for i from 0
              collect (make-instance 'media-row :kind :track :path tr :index i :library lib))))))

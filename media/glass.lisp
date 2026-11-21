@@ -123,8 +123,14 @@
                              :size 10 :color g:+dim+)))
       (m:media-dir
        (glass:fb-rect fb x y w h (if sel g:+row-sel+ g:+row-bg+))
-       (g:fb-text-baseline fb (+ x 10) (g:row-baseline y h 12) (format nil "[ ~a ]" (%cell p 0))
-                           :size 12 :color g:+fg+))
+       ;; a place (the person's Music, a folder they chose) is named, and its path is beside it
+       (g:fb-text-baseline fb (+ x 10) (g:row-baseline y h 12)
+                           (if (eq (%cell p 2) :place) (format nil "> ~a" (%cell p 0)) (format nil "[ ~a ]" (%cell p 0)))
+                           :size 12 :color g:+fg+)
+       (let ((s (princ-to-string (%cell p 1))))
+         (when (plusp (length s))
+           (g:fb-text-baseline fb (- (+ x w) 10 (glass:text-width s :size 10)) (g:row-baseline y h 10) s
+                               :size 10 :color g:+dim+))))
       (m:media-track
        (let ((st (%cell p 2)))
          (glass:fb-rect fb x y w h (if sel g:+row-sel+ g:+row-bg+))
