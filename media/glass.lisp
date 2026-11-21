@@ -15,7 +15,7 @@
   (:use #:cl #:warp)
   (:local-nicknames (#:m #:warp-media) (#:g #:warp-glass))
   (:export #:media-fb-consumer #:attach-fb #:make-media-window #:make-media-surface #:register
-           #:+width+ #:+picture-h+ #:+row-h+ #:*library*))
+           #:+width+ #:+picture-h+ #:+row-h+ #:*library* #:*theater*))
 
 (in-package #:warp-media-glass)
 
@@ -39,14 +39,26 @@
 
 ;;; ---- where things are ---------------------------------------------------------------------------------
 
+(defconstant +seek-h+ 16 "The seek bar: one macroblock tall.")
+(defconstant +rows-kept+ 4 "List rows kept in view under a picture, outside THEATER.")
+
+(defvar *theater* t
+  "True: a window WIDER THAN IT IS TALL with a picture -- a turned phone -- is THEATER, the picture the whole
+   window.  NIL where windows are wide as a rule (a Mac's desk): the picture shares the window with the
+   transport, the seek bar and the list.")
+
 (defun %picture-h (c)
   "16:9 of the window's width, in whole macroblocks: +PICTURE-H+ at the 512-pixel width the
    window was drawn for, and no black bars in a narrower one (a phone's 393 points).  A window
-   WIDER THAN IT IS TALL with a picture -- a turned phone -- is THEATER: the picture is the whole
-   window (letterboxed), and the transport, seek bar and list lie below it, out of view."
-  (if (and (m:has-picture-p c) (> (viewport-width c) (viewport-height c)))
-      (viewport-height c)
-      (* 16 (max 1 (round (* (viewport-width c) 9) (* 16 16))))))
+   WIDER THAN IT IS TALL with a picture -- a turned phone -- is THEATER (*THEATER*): the picture is
+   the whole window (letterboxed), and the transport, seek bar and list lie below it, out of view.
+   Otherwise a picture is never so tall that the transport, the seek bar and +ROWS-KEPT+ rows of the
+   list do not fit under it (a wide window's 16:9 is taller than the window): it is letterboxed."
+  (let ((natural (* 16 (max 1 (round (* (viewport-width c) 9) (* 16 16))))))
+    (cond ((not (m:has-picture-p c)) natural)
+          ((and *theater* (> (viewport-width c) (viewport-height c))) (viewport-height c))
+          (t (let ((room (- (viewport-height c) +row-h+ +seek-h+ (* +rows-kept+ +row-h+))))
+               (max (* 16 4) (min natural (* 16 (floor room 16)))))))))
 
 (defmethod m:picture-height ((c media-fb-consumer)) (%picture-h c))
 
@@ -64,7 +76,6 @@
     (snap-extent (+ (- (viewport-width c) (* 4 +control-w+)) (* i +control-w+))
                  (%transport-y c) +control-w+ +row-h+)))
 
-(defconstant +seek-h+ 16 "The seek bar: one macroblock tall.")
 (defparameter +seek-empty+ #x2a3240)
 (defparameter +seek-filled+ #x5abe82)
 (defparameter +seek-head+ #xdce4ec)
@@ -86,7 +97,10 @@
 
 (defmethod g:paint (fb p (view (eql 'm:media-view)))
   (let* ((e (p-extent p))
-         (x (extent-x e)) (y (extent-y e)) (w (extent-w e)) (h (extent-h e))
+         (x (extent-x e)) (y (extent-y e))
+         ;; an extent is whole macroblocks, and a window need not be (a Mac's is any width): what lies past
+         ;; the framebuffer's edge is not drawn, so right-aligned text and the letterbox use the edge itself
+         (w (max 0 (min (extent-w e) (- (glass:fb-width fb) x)))) (h (extent-h e))
          (sel (getf (p-state p) :selected)))
     (ecase (p-type p)
       (m:media-picture (%paint-picture fb p x y w h))

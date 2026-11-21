@@ -51,13 +51,18 @@ here.")
   (let ((type (pathname-type path)))
     (and type (member (string-downcase type) *extensions* :test #'string=) t)))
 
+(defun %hidden-p (name)
+  "A name that starts with a dot is hidden, as a Finder and ls hide it (~/.cache, .DS_Store)."
+  (and (plusp (length name)) (char= (char name 0) #\.)))
+
 (defun folder-tracks (dir)
-  (sort (remove-if-not #'playable-p
-                       (or (ignore-errors (uiop:directory-files (uiop:ensure-directory-pathname dir))) '()))
+  (sort (remove-if (lambda (p) (or (not (playable-p p)) (%hidden-p (file-namestring p))))
+                   (or (ignore-errors (uiop:directory-files (uiop:ensure-directory-pathname dir))) '()))
         #'string< :key (lambda (p) (string-downcase (file-namestring p)))))
 
 (defun folder-subdirs (dir)
-  (sort (or (ignore-errors (uiop:subdirectories (uiop:ensure-directory-pathname dir))) '())
+  (sort (remove-if (lambda (d) (%hidden-p (or (car (last (pathname-directory d))) "")))
+                   (or (ignore-errors (uiop:subdirectories (uiop:ensure-directory-pathname dir))) '()))
         #'string< :key (lambda (p) (string-downcase (namestring p)))))
 
 ;;; ---- the library: shared navigation + the player ----------------------------------------------------
