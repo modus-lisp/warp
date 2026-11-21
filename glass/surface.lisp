@@ -129,31 +129,54 @@ warp's and is not repeated here."
 
 ;;; ---- the encoding: deltas become framebuffer writes -------------------------
 
+(defun %overlap-p (a b)
+  (and (< (warp::extent-x a) (+ (warp::extent-x b) (warp::extent-w b)))
+       (< (warp::extent-x b) (+ (warp::extent-x a) (warp::extent-w a)))
+       (< (warp::extent-y a) (+ (warp::extent-y b) (warp::extent-h b)))
+       (< (warp::extent-y b) (+ (warp::extent-y a) (warp::extent-h a)))))
+
 (defmethod apply-deltas ((c fb-consumer) deltas)
   "Paint exactly what the stream emitted, and nothing else.  EVERY VACATED PLACE IS CLEARED FIRST --
    what went, where a moved row came from, where a row that moved and changed was -- and only then is
    anything painted: cleared one delta at a time, a place could be wiped after another row had moved
-   into it."
-  (let ((fb (consumer-fb c)) (view (consumer-view c)))
-    (glass:with-fb-locked (fb)
-      (dolist (d deltas)
-        (case (warp:delta-kind d)
-          (:moved
-           ;; No blit yet: clear where it came from, repaint at the new extent below.  The :moved KIND
-           ;; is still the right thing to carry — it is what a CopyRect or a motion vector will use
-           ;; once the encoder can see a translation (DESIGN.md rule 2).
-           (let ((e (warp:p-extent (warp:delta-presentation d))))
-             (clear-extent fb (list (- (warp::extent-x e) (warp:delta-dx d))
-                                    (- (warp::extent-y e) (warp:delta-dy d))
-                                    (warp::extent-w e) (warp::extent-h e)))))
-          (:changed (when (warp:delta-from d) (clear-extent fb (warp:delta-from d))))
-          (:gone (clear-extent fb (warp:delta-extent d)))))
-      (dolist (d deltas)
-        (ecase (warp:delta-kind d)
-          ((:appeared :changed :moved)
-           (paint fb (warp:delta-presentation d) view)
-           (incf (consumer-landed c)))
-          (:gone (incf (consumer-landed c))))))))
+   into it.
+
+   AND WHAT AN EARLIER PASS PAINTED IS PAINTED AGAIN WHERE THIS ONE CLEARED.  A change bigger than a
+   pass's budget lands over several passes (a list scrolled on a 2x screen moves every row, megapixels):
+   a row moved in the first, and a later one cleared the place another row had come from -- the place the
+   first had just painted it into.  A blank band was left where a row belonged until something repainted it."
+  (let ((fb (consumer-fb c)) (view (consumer-view c)) (cleared '()))
+    (flet ((clear (e) (clear-extent fb e) (push e cleared)))
+      (glass:with-fb-locked (fb)
+        (dolist (d deltas)
+          (case (warp:delta-kind d)
+            (:moved
+             ;; No blit yet: clear where it came from, repaint at the new extent below.  The :moved KIND
+             ;; is still the right thing to carry — it is what a CopyRect or a motion vector will use
+             ;; once the encoder can see a translation (DESIGN.md rule 2).
+             (let ((e (warp:p-extent (warp:delta-presentation d))))
+               (clear (list (- (warp::extent-x e) (warp:delta-dx d))
+                            (- (warp::extent-y e) (warp:delta-dy d))
+                            (warp::extent-w e) (warp::extent-h e)))))
+            (:changed (when (warp:delta-from d) (clear (warp:delta-from d))))
+            (:gone (clear (warp:delta-extent d)))))
+        (dolist (d deltas)
+          (ecase (warp:delta-kind d)
+            ((:appeared :changed :moved)
+             (paint fb (warp:delta-presentation d) view)
+             (incf (consumer-landed c)))
+            (:gone (incf (consumer-landed c)))))
+        ;; what this pass did not paint, and its clearing touched: the stream's DELIVERED state is what is on
+        ;; the framebuffer (a resync forgets it with everything else)
+        (when cleared
+          (let ((now (make-hash-table :test 'equal)))
+            (dolist (d deltas) (setf (gethash (warp:delta-key d) now) t))
+            (maphash (lambda (key p)
+                       (let ((e (warp:p-extent p)))
+                         (when (and e (not (gethash key now))
+                                    (some (lambda (x) (%overlap-p e x)) cleared))
+                           (paint fb p view))))
+                     (warp::ds-delivered (warp::consumer-stream c)))))))))
 
 ;;; ---- menu geometry ----------------------------------------------------------
 ;;; The menu MODEL is warp's (rules 5 and 6, menu.lisp): what a menu is, what is on it, and what
